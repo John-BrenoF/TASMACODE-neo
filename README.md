@@ -38,5 +38,3 @@ Graças a esse design, plugins podem variar desde simples utilitários (como col
 *   **Ferramentas**: Linter integrado e terminal embutido (via plugins).
 
 ---
-
-oi eu sou JOHN BRENO esse é o minha cntrubuição para aa huanidade , talvez a ultima .
