@@ -22,7 +22,7 @@ from file_picker import FilePicker
 import json
 import importlib
 try:
-    import psutil 
+    import psutil
 except ImportError:
     psutil = None
 
