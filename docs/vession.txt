@@ -5,6 +5,7 @@ novidades:
 
 1. tasmastore 
 2. correção de erros 
+3. janela de versão
 
 
 versão 
