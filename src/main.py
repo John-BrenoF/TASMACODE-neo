@@ -236,6 +236,10 @@ def main(stdscr, filepath):
         ui.draw(editors_to_draw, active_split, split_mode, status_msg, filepaths_to_draw, tab_info,
                 sidebar_items, sidebar_idx, sidebar_focus, sidebar_visible, sidebar_path, system_status)
         
+        # Limpa estado de sujo após o desenho
+        for tab in tab_manager.open_tabs:
+            tab['editor'].clean_dirty()
+
         # Linter Logic (Debounce)
         if lint_needed and (time.time() - last_keypress_time > 1.0):
             linter.lint(current_editor, current_filepath)
@@ -1104,6 +1108,3 @@ if __name__ == "__main__":
         pass
     except Exception as e:
         print(f"Ocorreu um erro fatal: {e}")
-
-
-

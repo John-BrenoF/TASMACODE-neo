@@ -29,6 +29,8 @@ class Editor:
         self.undo_stack = []
         self.redo_stack = []
         self._save_state() # Save initial state
+        self.dirty_lines = set()
+        self.needs_full_redraw = True
 
     def move_cursor(self, dx, dy):
         """Move o cursor garantindo que ele fique dentro dos limites do texto."""
@@ -59,11 +61,28 @@ class Editor:
     def goto_line(self, line_number):
         """Move o cursor para a linha especificada (1-based)."""
         target_y = line_number - 1
+        old_y = self.cy
         if 0 <= target_y < len(self.lines):
             self.cy = target_y
             self.cx = 0
+            if old_y != self.cy:
+                self.mark_dirty(old_y)
+                self.mark_dirty(self.cy)
             return True
         return False
+
+    def mark_dirty(self, y):
+        """Marca uma linha específica como suja para redesenho."""
+        self.dirty_lines.add(y)
+
+    def mark_all_dirty(self):
+        """Marca todo o editor para redesenho."""
+        self.needs_full_redraw = True
+
+    def clean_dirty(self):
+        """Limpa o estado de sujo após o redesenho."""
+        self.dirty_lines.clear()
+        self.needs_full_redraw = False
 
     def _save_state(self):
         """Saves the current editor state to the undo stack."""
@@ -86,6 +105,7 @@ class Editor:
             self.is_modified = False
         else:
             self.is_modified = True
+        self.mark_all_dirty()
 
     def insert_char(self, char, auto_close=False):
         """Insere um caractere na posição atual."""
@@ -100,6 +120,7 @@ class Editor:
         else:
             self.lines[self.cy] = line[:self.cx] + char + line[self.cx:]
         self.cx += 1
+        self.mark_dirty(self.cy)
 
     def insert_newline(self):
         """Quebra a linha atual em duas com auto-indentação."""
@@ -126,6 +147,7 @@ class Editor:
         self.lines.insert(self.cy + 1, indent + right_part)
         self.cy += 1 # Move cursor to new line
         self.cx = len(indent) # Move cursor to end of indentation
+        self.mark_all_dirty() # Inserir linha desloca tudo abaixo
 
     def delete_char(self):
         """Simula o Backspace."""
@@ -139,6 +161,7 @@ class Editor:
             self._save_state() # Save state before modification
             self.lines[self.cy] = line[:self.cx - 1] + line[self.cx:]
             self.cx -= 1
+            self.mark_dirty(self.cy)
         elif self.cy > 0:
             # Juntar com a linha de cima
             current_line = self.lines.pop(self.cy)
@@ -146,6 +169,7 @@ class Editor:
             self.cx = len(self.lines[self.cy])
             self._save_state() # Save state before modification
             self.lines[self.cy] += current_line
+            self.mark_all_dirty() # Remover linha desloca tudo
 
     def delete_forward(self):
         """Simula a tecla Delete (apaga à frente)."""
@@ -157,10 +181,12 @@ class Editor:
         if self.cx < len(line):
             self._save_state()
             self.lines[self.cy] = line[:self.cx] + line[self.cx + 1:]
+            self.mark_dirty(self.cy)
         elif self.cy < len(self.lines) - 1:
             self._save_state()
             next_line = self.lines.pop(self.cy + 1)
             self.lines[self.cy] += next_line
+            self.mark_all_dirty()
 
     def find(self, query):
         """
@@ -237,6 +263,7 @@ class Editor:
                 if new_line != line:
                     self.lines[i] = new_line
                     count += line.count(find_str)
+        self.mark_all_dirty()
         return count
 
     def replace_all_regex(self, pattern, replace_pattern):
@@ -253,6 +280,7 @@ class Editor:
             if n > 0:
                 self.lines[i] = new_line
                 count += n
+        self.mark_all_dirty()
         return count
 
     def _copy_to_system_clipboard(self, text):
@@ -348,6 +376,7 @@ class Editor:
                 # Update cursor position
                 self.cy += len(pasted_lines) - 1
                 self.cx = len(last_pasted_line)
+            self.mark_all_dirty()
 
     def select_all(self):
         """Seleciona todo o texto do buffer."""
@@ -355,12 +384,14 @@ class Editor:
         self.selection_anchor_x = 0
         self.cy = len(self.lines) - 1
         self.cx = len(self.lines[self.cy])
+        self.mark_all_dirty() # Seleção muda visual de tudo
 
     def duplicate_line(self):
         """Duplica a linha atual."""
         self._save_state()
         self.lines.insert(self.cy + 1, self.lines[self.cy])
         self.cy += 1
+        self.mark_all_dirty()
 
     def delete_current_line(self):
         """Deleta a linha atual."""
@@ -373,6 +404,7 @@ class Editor:
         else:
             self.lines[0] = ""
             self.cx = 0
+        self.mark_all_dirty()
 
     def move_line_up(self):
         """Move a linha atual para cima."""
@@ -380,6 +412,7 @@ class Editor:
             self._save_state()
             self.lines[self.cy], self.lines[self.cy - 1] = self.lines[self.cy - 1], self.lines[self.cy]
             self.cy -= 1
+            self.mark_all_dirty()
 
     def move_line_down(self):
         """Move a linha atual para baixo."""
@@ -387,6 +420,7 @@ class Editor:
             self._save_state()
             self.lines[self.cy], self.lines[self.cy + 1] = self.lines[self.cy + 1], self.lines[self.cy]
             self.cy += 1
+            self.mark_all_dirty()
 
     def indent_selection(self):
         """Indenta a linha atual ou a seleção."""
@@ -405,6 +439,7 @@ class Editor:
         self.cx += 4
         if self.has_selection():
             self.selection_anchor_x += 4
+        self.mark_all_dirty()
 
     def dedent_selection(self):
         """Remove indentação da linha atual ou seleção."""
@@ -423,6 +458,7 @@ class Editor:
                  self.lines[i] = self.lines[i].lstrip()
         
         self.cx = max(0, self.cx - 4)
+        self.mark_all_dirty()
 
     def toggle_comment(self):
         """Adiciona ou remove comentário (#) nas linhas selecionadas."""
@@ -447,16 +483,19 @@ class Editor:
                 self.lines[i] = line.replace("# ", "", 1).replace("#", "", 1)
             else:
                 self.lines[i] = "# " + line
+        self.mark_all_dirty()
 
     def start_selection(self):
         """Marca o início da seleção na posição atual do cursor."""
         self.selection_anchor_x = self.cx
         self.selection_anchor_y = self.cy
+        self.mark_dirty(self.cy)
 
     def clear_selection(self):
         """Limpa a seleção."""
         self.selection_anchor_x = None
         self.selection_anchor_y = None
+        self.mark_all_dirty() # Limpar seleção afeta visualmente várias linhas
 
     def has_selection(self):
         """Verifica se há texto selecionado."""
@@ -506,6 +545,7 @@ class Editor:
 
         self.cy, self.cx = start_y, start_x
         self.clear_selection()
+        self.mark_all_dirty()
 
     def undo(self):
         """Undoes the last action."""
@@ -513,6 +553,7 @@ class Editor:
             current_state = self.undo_stack.pop() # Remove current state
             self.redo_stack.append(current_state) # Add current state to redo stack
             self._restore_state(self.undo_stack[-1]) # Restore to the previous state
+            self.mark_all_dirty()
             return True
         return False
 
@@ -522,6 +563,7 @@ class Editor:
             state_to_redo = self.redo_stack.pop()
             self.undo_stack.append(state_to_redo) # Push the redone state back to undo stack
             self._restore_state(state_to_redo) # Restore to the redone state
+            self.mark_all_dirty()
             return True
         return False
 
@@ -736,6 +778,7 @@ class Editor:
             self.bookmarks.remove(self.cy)
         else:
             self.bookmarks.add(self.cy)
+        self.mark_dirty(self.cy)
 
     def next_bookmark(self):
         """Pula para o próximo marcador."""
@@ -744,9 +787,11 @@ class Editor:
         for mark in sorted_marks:
             if mark > self.cy:
                 self.cy = mark
+                self.mark_all_dirty() # Pulo longo
                 self.cx = 0
                 return
         self.cy = sorted_marks[0] # Wrap around
+        self.mark_all_dirty()
         self.cx = 0
 
     def _get_indent_level(self, line_idx):
@@ -792,6 +837,7 @@ class Editor:
                     break
             if can_fold:
                 self.folds.add(self.cy)
+        self.mark_all_dirty() # Dobra afeta layout vertical
 
     def prev_bookmark(self):
         """Pula para o marcador anterior."""
@@ -800,9 +846,11 @@ class Editor:
         for mark in sorted_marks:
             if mark < self.cy:
                 self.cy = mark
+                self.mark_all_dirty()
                 self.cx = 0
                 return
         self.cy = sorted_marks[0] # Wrap around
+        self.mark_all_dirty()
         self.cx = 0
 
     def get_symbols(self):
@@ -868,4 +916,5 @@ class Editor:
             self.cx = len(prefix) + len(snippet_lines[0])
             
         self.is_modified = True
+        self.mark_all_dirty()
         return True

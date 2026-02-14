@@ -32,6 +32,10 @@ class UI:
         self._initialize_colors()
 
         self.PYTHON_KEYWORDS = set(keyword.kwlist)
+        
+        # Estado anterior para detectar mudanças de layout
+        self.last_sidebar_visible = False
+        self.last_split_mode = 0
 
     def _initialize_colors(self):
         """(Re)Initializes all color pairs based on the current config."""
@@ -298,8 +302,16 @@ class UI:
     def draw(self, editors, active_split, split_mode, status_message="", filepaths=None, tab_info=None, 
              sidebar_items=None, sidebar_selection=0, sidebar_focus=False, show_sidebar=False, sidebar_path=".", system_info=""):
         """Renderiza o texto, cursor e barra de status, e abas."""
-        self.stdscr.erase()
         self.update_dimensions()
+        
+        # Detecta mudança de layout que exige limpeza total
+        layout_changed = (show_sidebar != self.last_sidebar_visible) or (split_mode != self.last_split_mode)
+        if layout_changed:
+            self.stdscr.erase()
+            for ed in editors: ed.mark_all_dirty()
+            self.last_sidebar_visible = show_sidebar
+            self.last_split_mode = split_mode
+
         if filepaths is None: filepaths = [""]
 
         sidebar_width = 0
@@ -418,7 +430,8 @@ class UI:
                 try: self.stdscr.move(screen_y, screen_x)
                 except: pass
 
-        self.stdscr.refresh()
+        self.stdscr.noutrefresh()
+        curses.doupdate()
 
     def _draw_editor_pane(self, editor, rect, filepath, is_active):
         y, x, h, w = rect
@@ -431,7 +444,8 @@ class UI:
             vis_cursor_y = visual_indices.index(editor.cy)
         except ValueError:
             vis_cursor_y = 0
-
+        
+        old_scroll_y = editor.scroll_offset_y
         if vis_cursor_y < editor.scroll_offset_y:
             editor.scroll_offset_y = vis_cursor_y
         if vis_cursor_y >= editor.scroll_offset_y + h:
@@ -443,6 +457,7 @@ class UI:
         gutter_width = line_num_width + 3 # Espaço para número + fold + separador
         total_left_margin = x + gutter_width
 
+        old_scroll_x = editor.scroll_offset_x
         # Lógica de Rolagem Horizontal
         screen_width = w - gutter_width # Largura efetiva para o texto
         if editor.cx < editor.scroll_offset_x:
@@ -450,14 +465,25 @@ class UI:
         if editor.cx >= editor.scroll_offset_x + screen_width:
             editor.scroll_offset_x = editor.cx - screen_width + 1
 
+        # Se houve rolagem, força redesenho total deste painel
+        if editor.scroll_offset_y != old_scroll_y or editor.scroll_offset_x != old_scroll_x:
+            editor.mark_all_dirty()
+
         # Get normalized selection once for drawing
         selection = editor.get_normalized_selection()
         
         # Get matching bracket
         matching_bracket = editor.get_matching_bracket()
 
+        # Determina quais linhas desenhar
+        lines_to_draw = range(h)
+        if not editor.needs_full_redraw:
+            # Filtra apenas linhas sujas que estão visíveis
+            lines_to_draw = [i for i in range(h) if (i + editor.scroll_offset_y) < len(visual_indices) and 
+                             visual_indices[i + editor.scroll_offset_y] in editor.dirty_lines]
+
         # Desenhar linhas visíveis
-        for i in range(h):
+        for i in lines_to_draw:
             vis_idx = i + editor.scroll_offset_y
             if vis_idx >= len(visual_indices):
                 break
@@ -498,6 +524,8 @@ class UI:
             
             try:
                 self.stdscr.addstr(screen_y_for_content, x, f"{line_num_str}{fold_char}{linter_char}", line_attr)
+                # Limpa o resto da linha antes de desenhar o conteúdo (importante para redesenho parcial)
+                self.stdscr.clrtoeol() 
             except curses.error: pass
 
             if filepath.endswith(".py") and curses.has_colors():
@@ -528,6 +556,13 @@ class UI:
                 if mb_y == file_line_idx:
                     mb_screen_x = mb_x - editor.scroll_offset_x + total_left_margin
                     self._addstr_clipped(screen_y_for_content, mb_screen_x, editor.lines[mb_y][mb_x], curses.A_BOLD | curses.A_REVERSE, min_x=total_left_margin)
+
+        # Limpar área vazia abaixo do texto (se arquivo for menor que a tela)
+        if editor.needs_full_redraw:
+            lines_drawn = min(len(visual_indices) - editor.scroll_offset_y, h)
+            for i in range(lines_drawn, h):
+                try: self.stdscr.move(y + i, x); self.stdscr.clrtoeol()
+                except: pass
 
         # Scrollbar Visual (lado direito)
         if len(editor.lines) > h:
