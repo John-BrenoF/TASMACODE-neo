@@ -1,0 +1,3 @@
+[✔] Implementar redesenho parcial: só atualiza o que muda, mata o piscar.
+[ ] Separar handler de teclas da UI: bota num módulo próprio, pra trocar atalho sem tocar no resto.
+[ ] Criar fila de eventos: assim plugin lento não trava o editor inteiro.
