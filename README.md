@@ -37,11 +37,15 @@ Graças a esse design, plugins podem variar desde simples utilitários (como col
 *   **Visualização**: Suporte a Split Vertical e Horizontal.
 *   **Ferramentas**: Linter integrado e terminal embutido (via plugins).
 
-## testes no gnometerminal 
+# testes 
+---
 
+## testes no ubuntu- gnometerminal 
 
 https://github.com/user-attachments/assets/edf08a34-43d9-4dcf-a4c2-5aa24bc3e20c
 
+##  testes no KDE-plamas - Konsole 
 
+https://github.com/user-attachments/assets/8038a951-90a4-478d-9ab8-a7ef99f0c124
 
 ---
