@@ -21,6 +21,7 @@ from extractor import ThemeExtractor
 from file_picker import FilePicker
 import json
 import importlib
+from key_handler import KeyHandler
 try:
     import psutil
 except ImportError:
@@ -122,6 +123,7 @@ def main(stdscr, filepath):
     ui = UI(stdscr, config) # Initialize UI once
     file_handler = FileHandler()
     tab_manager = TabManager(filepath, file_handler) # Initialize TabManager
+    key_handler = KeyHandler(config)
     status_msg = f"Arquivo: {tab_manager.get_current_filepath()}"
     
     # Sidebar State
@@ -198,9 +200,556 @@ def main(stdscr, filepath):
     recording_macro = False
     current_macro_buffer = []
     input_queue = []
+    should_exit = False
+
+    # --- Definição e Registro de Ações ---
+    # Funções locais para capturar estado (closures)
+
+    def action_fuzzy_find():
+        nonlocal status_msg
+        finder = FuzzyFinderWindow(ui, project_root, tab_manager, show_hidden)
+        finder.run()
+        stdscr.clear()
+        status_msg = "Fuzzy finder closed."
+
+    def action_macro_rec():
+        nonlocal recording_macro, macro_keys, current_macro_buffer, status_msg
+        if recording_macro:
+            recording_macro = False
+            macro_keys = list(current_macro_buffer)
+            status_msg = f"Macro gravada ({len(macro_keys)} teclas)."
+        else:
+            recording_macro = True
+            current_macro_buffer = []
+            status_msg = "Gravando macro..."
+
+    def action_import_theme():
+        nonlocal status_msg
+        picker = FilePicker(ui, start_path=".", allowed_extensions=['.json', '.zip'])
+        path = picker.run()
+        stdscr.clear()
+        if path:
+            status_msg = "Importando..."
+            ui.draw(editors_to_draw, active_split, split_mode, status_msg, filepaths_to_draw, tab_info,
+                    sidebar_items, sidebar_idx, sidebar_focus, sidebar_visible, sidebar_path, system_status)
+            success, msg = theme_extractor.import_themes(path)
+            status_msg = msg
+        else:
+            status_msg = "Importação cancelada."
+
+    def action_toggle_structure():
+        nonlocal left_plugin_focus, sidebar_visible, status_msg
+        if ui.left_sidebar_plugin:
+            if not ui.left_sidebar_plugin.is_visible:
+                ui.left_sidebar_plugin.is_visible = True
+                left_plugin_focus = True
+                sidebar_visible = False
+                status_msg = "Estrutura aberta"
+            else:
+                if left_plugin_focus:
+                    ui.left_sidebar_plugin.is_visible = False
+                    left_plugin_focus = False
+                    status_msg = "Estrutura fechada"
+                else:
+                    left_plugin_focus = True
+                    status_msg = "Foco na Estrutura"
+
+    def action_macro_play():
+        nonlocal status_msg
+        if macro_keys:
+            input_queue.extend(macro_keys)
+            status_msg = "Reproduzindo macro..."
+        else:
+            status_msg = "Nenhuma macro gravada."
+
+    def action_toggle_sidebar():
+        nonlocal sidebar_visible, sidebar_focus, sidebar_items
+        sidebar_visible = not sidebar_visible
+        if sidebar_visible:
+            sidebar_focus = True
+            sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
+        else:
+            sidebar_focus = False
+
+    def action_toggle_right_sidebar():
+        nonlocal right_sidebar_focus, status_msg
+        if ui.right_sidebar_plugin:
+            if not ui.right_sidebar_plugin.is_visible:
+                ui.right_sidebar_plugin.is_visible = True
+                right_sidebar_focus = True
+                status_msg = "Chattovex aberto (Focado)"
+            else:
+                if right_sidebar_focus:
+                    ui.right_sidebar_plugin.is_visible = False
+                    right_sidebar_focus = False
+                    status_msg = "Chattovex fechado"
+                else:
+                    right_sidebar_focus = True
+                    status_msg = "Foco no Chat"
+        else:
+            status_msg = "Nenhum plugin de chat carregado."
+
+    def action_autocomplete():
+        completions, prefix = current_editor.get_completions()
+        if completions:
+            idx = 0
+            while True:
+                ui.draw(editors_to_draw, active_split, split_mode, "Autocompletar...", filepaths_to_draw, tab_info,
+                        sidebar_items, sidebar_idx, sidebar_focus, sidebar_visible, sidebar_path)
+                ui.draw_autocomplete(completions, idx, current_editor, content_start_y, total_margin)
+                ch = ui.get_input()
+                if ch == curses.KEY_UP: idx = (idx - 1) % len(completions)
+                elif ch == curses.KEY_DOWN: idx = (idx + 1) % len(completions)
+                elif isinstance(ch, int) and ch in (10, 13, 9):
+                    completion = completions[idx]
+                    remainder = completion[len(prefix):]
+                    for c in remainder: current_editor.insert_char(c)
+                    break
+                elif ch == 27: break
+                else: break
+
+    def action_help():
+        ui.show_help()
+
+    def action_select_all():
+        nonlocal status_msg
+        current_editor.select_all()
+        status_msg = "Selecionado tudo"
+
+    def action_duplicate_line():
+        nonlocal status_msg
+        current_editor.duplicate_line()
+        status_msg = "Linha duplicada"
+
+    def action_delete_line():
+        nonlocal status_msg
+        current_editor.delete_current_line()
+        status_msg = "Linha deletada"
+
+    def action_toggle_comment():
+        nonlocal status_msg
+        current_editor.toggle_comment()
+        status_msg = "Comentário alternado"
+
+    def action_delete_general():
+        nonlocal status_msg, sidebar_items
+        if sidebar_focus and sidebar_visible:
+            if sidebar_items:
+                name, is_dir = sidebar_items[sidebar_idx]
+                if name != "..":
+                    target_path = os.path.join(sidebar_path, name)
+                    confirm = ui.prompt(f"Deletar '{name}'? (s/n): ")
+                    if confirm and confirm.lower() == 's':
+                        trash_path = os.path.join(trash_dir, os.path.basename(target_path) + "_" + str(os.getpid()))
+                        if file_handler.move_file(target_path, trash_path):
+                            sidebar_undo_stack.append({'type': 'delete', 'original': target_path, 'trash': trash_path})
+                            sidebar_redo_stack.clear()
+                            sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
+                            status_msg = "Deletado (movido para lixeira)"
+                        else:
+                            status_msg = "Erro ao deletar"
+        else:
+            current_editor.delete_forward()
+
+    def action_save():
+        nonlocal status_msg
+        try:
+            tab_manager.save_current_file()
+            status_msg = "Arquivo salvo com sucesso!"
+        except Exception as e:
+            status_msg = f"Erro ao salvar: {str(e)}"
+
+    def action_find():
+        nonlocal status_msg
+        query = ui.prompt("Find: ")
+        if query:
+            location = current_editor.find(query)
+            if location:
+                current_editor.cy, current_editor.cx = location
+                status_msg = f"Encontrado em Ln {location[0]+1}, Col {location[1]+1}"
+            else:
+                status_msg = f"'{query}' não encontrado"
+
+    def action_find_regex():
+        nonlocal status_msg
+        query = ui.prompt("Regex Find: ")
+        if query:
+            location = current_editor.find_regex(query)
+            if location:
+                current_editor.cy, current_editor.cx = location
+                status_msg = f"Regex encontrado em Ln {location[0]+1}, Col {location[1]+1}"
+            else:
+                status_msg = f"Regex '{query}' não encontrado"
+
+    def action_find_next():
+        nonlocal status_msg
+        location = current_editor.find_next()
+        if location:
+            current_editor.cy, current_editor.cx = location
+            status_msg = f"Encontrado em Ln {location[0] + 1}, Col {location[1] + 1}"
+        else:
+            status_msg = f"Nenhuma ocorrência encontrada"
+
+    def action_replace():
+        nonlocal status_msg
+        find_str = ui.prompt("Substituir: ")
+        if find_str:
+            replace_str = ui.prompt(f"Substituir '{find_str}' por: ")
+            if replace_str is not None:
+                count = current_editor.replace_all(find_str, replace_str)
+                status_msg = f"{count} ocorrências substituídas."
+            else:
+                status_msg = "Substituição cancelada."
+
+    def action_replace_regex():
+        nonlocal status_msg
+        find_str = ui.prompt("Regex Substituir: ")
+        if find_str:
+            replace_str = ui.prompt(f"Substituir Regex '{find_str}' por: ")
+            if replace_str is not None:
+                count = current_editor.replace_all_regex(find_str, replace_str)
+                if count == -1: status_msg = "Erro na expressão regular."
+                else: status_msg = f"{count} ocorrências substituídas (Regex)."
+            else:
+                status_msg = "Substituição cancelada."
+
+    def action_copy():
+        nonlocal status_msg, sidebar_clipboard
+        if sidebar_focus and sidebar_visible:
+            if sidebar_items:
+                name, is_dir = sidebar_items[sidebar_idx]
+                if name != "..":
+                    sidebar_clipboard = os.path.join(sidebar_path, name)
+                    status_msg = f"Copiado para área de transferência: {name}"
+        else:
+            current_editor.copy()
+            status_msg = "Copiado para a área de transferência"
+
+    def action_cut():
+        nonlocal status_msg
+        current_editor.cut()
+        status_msg = "Recortado para a área de transferência"
+
+    def action_paste():
+        nonlocal status_msg, sidebar_items
+        if sidebar_focus and sidebar_visible:
+            if sidebar_clipboard and os.path.exists(sidebar_clipboard):
+                src = sidebar_clipboard
+                dst_name = os.path.basename(src)
+                dst = os.path.join(sidebar_path, dst_name)
+                if os.path.exists(dst):
+                    base, ext = os.path.splitext(dst_name)
+                    dst = os.path.join(sidebar_path, f"{base}_copy{ext}")
+                if file_handler.copy_path(src, dst):
+                    sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
+                    sidebar_undo_stack.append({'type': 'copy', 'dest': dst})
+                    sidebar_redo_stack.clear()
+                    status_msg = f"Colado: {os.path.basename(dst)}"
+                else:
+                    status_msg = "Erro ao colar arquivo"
+            elif sidebar_clipboard:
+                status_msg = "Arquivo de origem não encontrado"
+            else:
+                status_msg = "Nada para colar"
+        else:
+            current_editor.paste()
+            status_msg = "Colado"
+
+    def action_undo():
+        nonlocal status_msg, sidebar_items
+        if sidebar_focus and sidebar_visible:
+            if sidebar_undo_stack:
+                action = sidebar_undo_stack.pop()
+                sidebar_redo_stack.append(action)
+                if action['type'] == 'rename':
+                    file_handler.move_file(action['new'], action['old'])
+                    tab_manager.rename_open_file(action['new'], action['old'])
+                    status_msg = f"Desfeito: Renomear"
+                elif action['type'] == 'delete':
+                    file_handler.move_file(action['trash'], action['original'])
+                    status_msg = f"Desfeito: Deletar"
+                elif action['type'] == 'copy':
+                    trash_path = os.path.join(trash_dir, os.path.basename(action['dest']) + "_undo_" + str(os.getpid()))
+                    file_handler.move_file(action['dest'], trash_path)
+                    status_msg = f"Desfeito: Copiar"
+                sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
+            else:
+                status_msg = "Nada para desfazer na sidebar"
+        else:
+            if current_editor.undo(): status_msg = "Desfeito"
+            else: status_msg = "Nada para desfazer"
+
+    def action_redo():
+        nonlocal status_msg
+        if sidebar_focus and sidebar_visible:
+            if sidebar_redo_stack:
+                status_msg = "Refazer não implementado totalmente para arquivos."
+        else:
+            if current_editor.redo(): status_msg = "Refeito"
+            else: status_msg = "Nada para refazer"
+
+    def action_open():
+        nonlocal status_msg
+        filename_to_open = ui.prompt("Abrir arquivo: ")
+        if filename_to_open:
+            try:
+                tab_manager.open_file(filename_to_open)
+                status_msg = f"Arquivo '{filename_to_open}' aberto."
+            except Exception as e:
+                status_msg = f"Erro ao abrir arquivo: {str(e)}"
+
+    def action_goto_line():
+        nonlocal status_msg
+        line_str = ui.prompt("Ir para linha: ")
+        if line_str:
+            try:
+                line_num = int(line_str)
+                if current_editor.goto_line(line_num): status_msg = f"Movido para linha {line_num}"
+                else: status_msg = "Número de linha inválido"
+            except ValueError: status_msg = "Entrada inválida"
+
+    def action_quit():
+        nonlocal status_msg, should_exit
+        if tab_manager.check_all_modified():
+            status_msg = "Arquivo modificado! Ctrl+S para salvar ou Ctrl+Q novamente para forçar saída."
+            ui.draw(editors_to_draw, active_split, split_mode, status_msg, filepaths_to_draw, tab_info,
+                    sidebar_items, sidebar_idx, sidebar_focus, sidebar_visible, sidebar_path, system_status)
+            confirm = ui.get_input()
+            if confirm == config.get_key("quit"):
+                should_exit = True
+            elif confirm == config.get_key("save"):
+                tab_manager.save_current_file()
+                should_exit = True
+        else:
+            should_exit = True
+
+    def action_close_tab():
+        nonlocal status_msg
+        editor_to_close = tab_manager.get_current_editor()
+        if editor_to_close.is_modified:
+            prompt_msg = f"Salvar '{tab_manager.get_current_filepath()}'? (s/n/c): "
+            choice = (ui.prompt(prompt_msg) or "").lower()
+            if choice == 's':
+                try:
+                    tab_manager.save_current_file()
+                except Exception as e:
+                    status_msg = f"Erro ao salvar: {e}"
+                    return
+            elif choice == 'c':
+                status_msg = "Fechamento cancelado."
+                return
+        if tab_manager.close_current_tab():
+            status_msg = "Aba fechada."
+            if split_tab_indices[active_split] >= len(tab_manager.open_tabs):
+                split_tab_indices[active_split] = max(0, len(tab_manager.open_tabs) - 1)
+
+    # --- Sidebar Specific Actions ---
+    def action_sidebar_set_root():
+        nonlocal sidebar_path, project_root, sidebar_items, sidebar_idx, status_msg
+        if sidebar_focus and sidebar_visible and sidebar_items:
+            name, is_dir = sidebar_items[sidebar_idx]
+            if is_dir and name != "..":
+                sidebar_path = os.path.join(sidebar_path, name)
+                project_root = sidebar_path
+                session_manager.save_sidebar_path(sidebar_path)
+                sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
+                sidebar_idx = 0
+                status_msg = f"Raiz definida para: {sidebar_path}"
+            elif name == "..":
+                sidebar_path = os.path.dirname(sidebar_path)
+                project_root = sidebar_path
+                session_manager.save_sidebar_path(sidebar_path)
+                sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
+                sidebar_idx = 0
+                status_msg = f"Raiz definida para: {sidebar_path}"
+
+    def action_sidebar_rename():
+        nonlocal sidebar_items, status_msg
+        if sidebar_focus and sidebar_visible and sidebar_items:
+            name, is_dir = sidebar_items[sidebar_idx]
+            if name != "..":
+                old_path = os.path.join(sidebar_path, name)
+                new_name = ui.prompt(f"Renomear '{name}' para: ")
+                if new_name:
+                    new_path = os.path.join(sidebar_path, new_name)
+                    if file_handler.move_file(old_path, new_path):
+                        tab_manager.rename_open_file(old_path, new_path)
+                        sidebar_undo_stack.append({'type': 'rename', 'old': old_path, 'new': new_path})
+                        sidebar_redo_stack.clear()
+                        sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
+                        status_msg = "Renomeado com sucesso"
+                    else:
+                        status_msg = "Erro ao renomear"
+
+    def action_sidebar_new_file():
+        nonlocal sidebar_items, status_msg
+        if sidebar_focus and sidebar_visible:
+            name = ui.prompt("Novo arquivo: ")
+            if name:
+                path = os.path.join(sidebar_path, name)
+                if file_handler.create_file(path):
+                    sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
+                    status_msg = f"Arquivo criado: {name}"
+                else:
+                    status_msg = "Erro ao criar arquivo"
+
+    def action_sidebar_new_dir():
+        nonlocal sidebar_items, status_msg
+        if sidebar_focus and sidebar_visible:
+            name = ui.prompt("Nova pasta: ")
+            if name:
+                path = os.path.join(sidebar_path, name)
+                if file_handler.create_directory(path):
+                    sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
+                    status_msg = f"Pasta criada: {name}"
+                else:
+                    status_msg = "Erro ao criar pasta"
+
+    def action_sidebar_toggle_hidden():
+        nonlocal show_hidden, sidebar_items, sidebar_idx, status_msg
+        if sidebar_focus and sidebar_visible:
+            show_hidden = not show_hidden
+            sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
+            sidebar_idx = 0
+            status_msg = f"Arquivos ocultos: {'Visíveis' if show_hidden else 'Escondidos'}"
+
+    def action_sidebar_refresh():
+        nonlocal sidebar_items, status_msg
+        if sidebar_focus and sidebar_visible:
+            sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
+            status_msg = "Sidebar atualizada."
+
+    # Registrando ações
+    key_handler.register_action("fuzzy_find_file", action_fuzzy_find)
+    key_handler.register_action("macro_rec", action_macro_rec)
+    key_handler.register_action("import_theme", action_import_theme)
+    key_handler.register_action("toggle_structure", action_toggle_structure)
+    key_handler.register_action("macro_play", action_macro_play)
+    key_handler.register_action("toggle_sidebar", action_toggle_sidebar)
+    key_handler.register_action("toggle_right_sidebar", action_toggle_right_sidebar)
+    key_handler.register_action("autocomplete", action_autocomplete)
+    key_handler.register_action("help", action_help)
+    key_handler.register_action("select_all", action_select_all)
+    key_handler.register_action("duplicate_line", action_duplicate_line)
+    key_handler.register_action("delete_line", action_delete_line)
+    key_handler.register_action("toggle_comment", action_toggle_comment)
+    key_handler.register_action("delete_forward", action_delete_general)
+    key_handler.register_action("delete_file", action_delete_general) # Register for sidebar delete key too
+    key_handler.register_action("save", action_save)
+    key_handler.register_action("quit", action_quit)
+    key_handler.register_action("close_tab", action_close_tab)
+    key_handler.register_action("find", action_find)
+    key_handler.register_action("find_regex", action_find_regex)
+    key_handler.register_action("find_next", action_find_next)
+    key_handler.register_action("replace", action_replace)
+    key_handler.register_action("replace_regex", action_replace_regex)
+    key_handler.register_action("copy", action_copy)
+    key_handler.register_action("cut", action_cut)
+    key_handler.register_action("paste", action_paste)
+    key_handler.register_action("undo", action_undo)
+    key_handler.register_action("redo", action_redo)
+    key_handler.register_action("open", action_open)
+    key_handler.register_action("goto_line", action_goto_line)
+    # Sidebar Actions
+    key_handler.register_action("set_root", action_sidebar_set_root)
+    key_handler.register_action("rename", action_sidebar_rename)
+    key_handler.register_action("new_file", action_sidebar_new_file)
+    key_handler.register_action("new_dir", action_sidebar_new_dir)
+    key_handler.register_action("toggle_hidden", action_sidebar_toggle_hidden)
+    key_handler.register_action("refresh", action_sidebar_refresh)
+    
+    # Mais ações simples via lambda onde possível ou funções adicionais
+    key_handler.register_action("definition", lambda: (
+        loc := current_editor.find_definition(current_editor.get_word_under_cursor()),
+        setattr(current_editor, 'cy', loc[0]) if loc else None,
+        setattr(current_editor, 'cx', loc[1]) if loc else None
+    ))
+    
+    key_handler.register_action("toggle_bookmark", lambda: (current_editor.toggle_bookmark(), None)[1])
+    key_handler.register_action("next_bookmark", lambda: (current_editor.next_bookmark(), None)[1])
+    key_handler.register_action("prev_bookmark", lambda: (current_editor.prev_bookmark(), None)[1])
+    key_handler.register_action("jump_bracket", lambda: (
+        match := current_editor.get_matching_bracket(),
+        setattr(current_editor, 'cy', match[0]) if match else None,
+        setattr(current_editor, 'cx', match[1]) if match else None
+    ))
+    key_handler.register_action("toggle_fold", lambda: current_editor.toggle_fold())
+    
+    # Ações que modificam estado local simples
+    def action_toggle_split():
+        nonlocal split_mode, status_msg
+        split_mode = (split_mode + 1) % 3
+        status_msg = f"Modo Split: {['Nenhum', 'Vertical', 'Horizontal'][split_mode]}"
+    key_handler.register_action("toggle_split", action_toggle_split)
+
+    def action_switch_focus():
+        nonlocal active_split
+        if split_mode != 0: active_split = 1 - active_split
+    key_handler.register_action("switch_focus", action_switch_focus)
+
+    def action_export_html():
+        nonlocal status_msg
+        default_name = os.path.basename(current_filepath) + ".html"
+        out_path = ui.prompt(f"Exportar HTML para ({default_name}): ")
+        if not out_path: out_path = default_name
+        if html_exporter.export(current_editor.lines, out_path): status_msg = f"Exportado para {out_path}"
+        else: status_msg = "Erro ao exportar HTML."
+    key_handler.register_action("export_html", action_export_html)
+
+    def action_open_config():
+        nonlocal status_msg
+        try:
+            tab_manager.open_file(os.path.abspath(config.filepath))
+            status_msg = "Configuração aberta."
+        except Exception as e: status_msg = f"Erro ao abrir configuração: {e}"
+    key_handler.register_action("open_config", action_open_config)
+
+    def action_open_settings():
+        nonlocal status_msg
+        config_win = ConfigWindow(ui, config)
+        config_win.run()
+        status_msg = "Settings closed. Restart to apply all changes."
+        stdscr.clear()
+    key_handler.register_action("open_settings", action_open_settings)
+
+    def action_open_folder():
+        nonlocal sidebar_path, project_root, sidebar_items, sidebar_idx, status_msg
+        folder_path = ui.prompt("Abrir Pasta: ")
+        if folder_path:
+            folder_path = os.path.expanduser(folder_path)
+            if os.path.isdir(folder_path):
+                sidebar_path = os.path.abspath(folder_path)
+                project_root = sidebar_path
+                session_manager.save_sidebar_path(sidebar_path)
+                sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
+                sidebar_idx = 0
+                status_msg = f"Pasta de trabalho: {sidebar_path}"
+            else: status_msg = "Diretório inválido."
+    key_handler.register_action("open_folder", action_open_folder)
+
+    def action_goto_symbol():
+        nonlocal status_msg
+        symbols = current_editor.get_symbols()
+        if symbols:
+            idx = 0
+            while True:
+                ui.draw(editors_to_draw, active_split, split_mode, "Go to Symbol...", filepaths_to_draw, tab_info,
+                        sidebar_items, sidebar_idx, sidebar_focus, sidebar_visible, sidebar_path, system_status)
+                ui.draw_symbol_picker(symbols, idx)
+                ch = ui.get_input()
+                if ch == curses.KEY_UP: idx = (idx - 1) % len(symbols)
+                elif ch == curses.KEY_DOWN: idx = (idx + 1) % len(symbols)
+                elif isinstance(ch, int) and ch in (10, 13):
+                    line_num = symbols[idx][0]
+                    current_editor.goto_line(line_num + 1)
+                    status_msg = f"Saltou para símbolo na linha {line_num + 1}"
+                    break
+                elif ch == 27: break
+        else: status_msg = "Nenhum símbolo encontrado."
+    key_handler.register_action("goto_symbol", action_goto_symbol)
 
     # Loop Principal
-    while True:
+    while not should_exit:
         # Ensure tab indices are valid
         if not tab_manager.open_tabs:
             break # Sai se não houver mais abas abertas
@@ -266,122 +815,31 @@ def main(stdscr, filepath):
         if isinstance(key, str):
             key_code = ord(key)
             
-        # Check for global plugin commands first
-        if key_code in global_commands:
-            global_commands[key_code]()
-            # Force a full redraw after plugin window closes
-            stdscr.clear()
-            status_msg = "Plugin window closed."
+        # --- Key Handler Dispatch ---
+        # Passa o contexto necessário para plugins globais
+        handler_context = {'global_commands': global_commands}
+        if key_handler.handle_key(key_code, handler_context):
+            # Se a tecla foi tratada pelo handler, continua o loop
             continue
 
-        # Ctrl+P (Fuzzy Find File)
-        elif key_code == config.get_key("fuzzy_find_file"):
-            finder = FuzzyFinderWindow(ui, project_root, tab_manager, show_hidden)
-            finder.run()
-            # Force redraw after window closes
-            stdscr.clear()
-            status_msg = "Fuzzy finder closed."
-            continue
-            
         status_msg = "" # Limpa a mensagem de status a cada iteração
 
         # Macro Controls
-        if key_code == config.get_key("macro_rec"):
-            if recording_macro:
-                recording_macro = False
-                macro_keys = list(current_macro_buffer)
-                status_msg = f"Macro gravada ({len(macro_keys)} teclas)."
-            else:
-                recording_macro = True
-                current_macro_buffer = []
-                status_msg = "Gravando macro..."
-            continue
-        
-        # Ctrl+E (Import Theme)
-        elif key_code == config.get_key("import_theme"):
-            picker = FilePicker(ui, start_path=".", allowed_extensions=['.json', '.zip'])
-            path = picker.run()
-            
-            # Força limpeza da tela após fechar o picker
-            stdscr.clear()
-            
-            if path:
-                status_msg = "Importando..."
-                # Força desenho para mostrar status "Importando..."
-                ui.draw(editors_to_draw, active_split, split_mode, status_msg, filepaths_to_draw, tab_info,
-                        sidebar_items, sidebar_idx, sidebar_focus, sidebar_visible, sidebar_path, system_status)
-                success, msg = theme_extractor.import_themes(path)
-                status_msg = msg
-            else:
-                status_msg = "Importação cancelada."
-            continue
-
-        # Ctrl+R (Toggle Structure Sidebar)
-        elif key_code == config.get_key("toggle_structure"):
-            if ui.left_sidebar_plugin:
-                if not ui.left_sidebar_plugin.is_visible:
-                    ui.left_sidebar_plugin.is_visible = True
-                    left_plugin_focus = True
-                    sidebar_visible = False # Esconde a sidebar de arquivos padrão
-                    status_msg = "Estrutura aberta"
-                else:
-                    if left_plugin_focus:
-                        ui.left_sidebar_plugin.is_visible = False
-                        left_plugin_focus = False
-                        status_msg = "Estrutura fechada"
-                    else:
-                        left_plugin_focus = True
-                        status_msg = "Foco na Estrutura"
-            continue
+        # Nota: macro_rec é tratado no handler, mas a lógica de gravação precisa rodar para todas as teclas
+        # Como macro_rec é um toggle, ele foi movido para o handler.
+        # A gravação em si acontece abaixo:
 
         # Lógica da Sidebar Esquerda (Plugin)
-        elif left_plugin_focus and ui.left_sidebar_plugin and ui.left_sidebar_plugin.is_visible:
+        if left_plugin_focus and ui.left_sidebar_plugin and ui.left_sidebar_plugin.is_visible:
             if hasattr(ui.left_sidebar_plugin, 'handle_input'):
                 ui.left_sidebar_plugin.handle_input(key_code)
-            continue
-
-        elif key_code == config.get_key("macro_play"):
-            if macro_keys:
-                input_queue.extend(macro_keys)
-                status_msg = "Reproduzindo macro..."
-            else:
-                status_msg = "Nenhuma macro gravada."
             continue
 
         if recording_macro:
             current_macro_buffer.append(key)
 
-        # Ctrl+B (Toggle Sidebar) - ASCII 2
-        if key_code == config.get_key("toggle_sidebar"):
-            sidebar_visible = not sidebar_visible
-            if sidebar_visible:
-                sidebar_focus = True
-                sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
-            else:
-                sidebar_focus = False
-            continue
-
-        # Toggle Right Sidebar (Ctrl+H)
-        elif key_code == config.get_key("toggle_right_sidebar"):
-            if ui.right_sidebar_plugin:
-                if not ui.right_sidebar_plugin.is_visible:
-                    ui.right_sidebar_plugin.is_visible = True
-                    right_sidebar_focus = True # Foca ao abrir
-                    status_msg = "Chattovex aberto (Focado)"
-                else:
-                    # Se já visível, alterna foco ou fecha
-                    if right_sidebar_focus:
-                        ui.right_sidebar_plugin.is_visible = False
-                        right_sidebar_focus = False
-                        status_msg = "Chattovex fechado"
-                    else:
-                        right_sidebar_focus = True
-                        status_msg = "Foco no Chat"
-            else:
-                status_msg = "Nenhum plugin de chat carregado."
-        
         # Lógica da Sidebar Direita (Chat)
-        elif right_sidebar_focus and ui.right_sidebar_plugin and ui.right_sidebar_plugin.is_visible:
+        if right_sidebar_focus and ui.right_sidebar_plugin and ui.right_sidebar_plugin.is_visible:
             if key_code == 27: # Esc para sair do foco
                 right_sidebar_focus = False
                 status_msg = "Foco no Editor"
@@ -445,153 +903,6 @@ def main(stdscr, filepath):
             elif key_code == 27: # Esc
                 sidebar_focus = False
             
-            # Shift+P (Set Root)
-            elif key_code == config.get_key("set_root"):
-                if sidebar_items:
-                    name, is_dir = sidebar_items[sidebar_idx]
-                    if is_dir and name != "..":
-                        sidebar_path = os.path.join(sidebar_path, name)
-                        project_root = sidebar_path
-                        session_manager.save_sidebar_path(sidebar_path)
-                        sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
-                        sidebar_idx = 0
-                        status_msg = f"Raiz definida para: {sidebar_path}"
-                    elif name == "..":
-                        sidebar_path = os.path.dirname(sidebar_path)
-                        project_root = sidebar_path
-                        session_manager.save_sidebar_path(sidebar_path)
-                        sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
-                        sidebar_idx = 0
-                        status_msg = f"Raiz definida para: {sidebar_path}"
-            
-            # F2 (Rename)
-            elif key_code == config.get_key("rename"):
-                if sidebar_items:
-                    name, is_dir = sidebar_items[sidebar_idx]
-                    if name != "..":
-                        old_path = os.path.join(sidebar_path, name)
-                        new_name = ui.prompt(f"Renomear '{name}' para: ")
-                        if new_name:
-                            new_path = os.path.join(sidebar_path, new_name)
-                            if file_handler.move_file(old_path, new_path):
-                                tab_manager.rename_open_file(old_path, new_path)
-                                sidebar_undo_stack.append({'type': 'rename', 'old': old_path, 'new': new_path})
-                                sidebar_redo_stack.clear()
-                                sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
-                                status_msg = "Renomeado com sucesso"
-                            else:
-                                status_msg = "Erro ao renomear"
-
-            # Delete (KEY_DC)
-            elif key_code == config.get_key("delete_file"):
-                if sidebar_items:
-                    name, is_dir = sidebar_items[sidebar_idx]
-                    if name != "..":
-                        target_path = os.path.join(sidebar_path, name)
-                        confirm = ui.prompt(f"Deletar '{name}'? (s/n): ")
-                        if confirm and confirm.lower() == 's':
-                            trash_path = os.path.join(trash_dir, os.path.basename(target_path) + "_" + str(os.getpid()))
-                            if file_handler.move_file(target_path, trash_path):
-                                sidebar_undo_stack.append({'type': 'delete', 'original': target_path, 'trash': trash_path})
-                                sidebar_redo_stack.clear()
-                                sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
-                                status_msg = "Deletado (movido para lixeira)"
-                            else:
-                                status_msg = "Erro ao deletar"
-
-            # Ctrl+Z (Undo Sidebar)
-            elif key_code == config.get_key("undo"):
-                if sidebar_undo_stack:
-                    action = sidebar_undo_stack.pop()
-                    sidebar_redo_stack.append(action)
-                    if action['type'] == 'rename':
-                        file_handler.move_file(action['new'], action['old'])
-                        tab_manager.rename_open_file(action['new'], action['old'])
-                        status_msg = f"Desfeito: Renomear"
-                    elif action['type'] == 'delete':
-                        file_handler.move_file(action['trash'], action['original'])
-                        status_msg = f"Desfeito: Deletar"
-                    elif action['type'] == 'copy':
-                        trash_path = os.path.join(trash_dir, os.path.basename(action['dest']) + "_undo_" + str(os.getpid()))
-                        file_handler.move_file(action['dest'], trash_path)
-                        status_msg = f"Desfeito: Copiar"
-                    sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
-                else:
-                    status_msg = "Nada para desfazer na sidebar"
-
-            # Ctrl+Y (Redo Sidebar)
-            elif key_code == config.get_key("redo"):
-                if sidebar_redo_stack:
-                    # Implementação simplificada de redo (re-executar a ação inversa do undo)
-                    status_msg = "Refazer não implementado totalmente para arquivos."
-            
-            # h (Toggle Hidden Files)
-            elif key_code == config.get_key("toggle_hidden"):
-                show_hidden = not show_hidden
-                sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
-                sidebar_idx = 0
-                status_msg = f"Arquivos ocultos: {'Visíveis' if show_hidden else 'Escondidos'}"
-
-            # r (Refresh)
-            elif key_code == config.get_key("refresh"):
-                sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
-                status_msg = "Sidebar atualizada."
-
-            # n (New File)
-            elif key_code == config.get_key("new_file"):
-                name = ui.prompt("Novo arquivo: ")
-                if name:
-                    path = os.path.join(sidebar_path, name)
-                    if file_handler.create_file(path):
-                        sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
-                        status_msg = f"Arquivo criado: {name}"
-                    else:
-                        status_msg = "Erro ao criar arquivo"
-
-            # N (New Directory) - Shift+n
-            elif key_code == config.get_key("new_dir"):
-                name = ui.prompt("Nova pasta: ")
-                if name:
-                    path = os.path.join(sidebar_path, name)
-                    if file_handler.create_directory(path):
-                        sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
-                        status_msg = f"Pasta criada: {name}"
-                    else:
-                        status_msg = "Erro ao criar pasta"
-
-            # Ctrl+C (Copy File)
-            elif key_code == config.get_key("copy"):
-                if sidebar_items:
-                    name, is_dir = sidebar_items[sidebar_idx]
-                    if name != "..":
-                        sidebar_clipboard = os.path.join(sidebar_path, name)
-                        status_msg = f"Copiado para área de transferência: {name}"
-
-            # Ctrl+V (Paste File)
-            elif key_code == config.get_key("paste"):
-                if sidebar_clipboard and os.path.exists(sidebar_clipboard):
-                    src = sidebar_clipboard
-                    dst_name = os.path.basename(src)
-                    dst = os.path.join(sidebar_path, dst_name)
-                    
-                    # Evitar sobrescrever se já existir
-                    if os.path.exists(dst):
-                        base, ext = os.path.splitext(dst_name)
-                        dst = os.path.join(sidebar_path, f"{base}_copy{ext}")
-                    
-                    if file_handler.copy_path(src, dst):
-                        sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
-                        # Adicionar ao undo stack (Undo de copy é deletar o destino)
-                        sidebar_undo_stack.append({'type': 'copy', 'dest': dst})
-                        sidebar_redo_stack.clear()
-                        status_msg = f"Colado: {os.path.basename(dst)}"
-                    else:
-                        status_msg = "Erro ao colar arquivo"
-                elif sidebar_clipboard:
-                    status_msg = "Arquivo de origem não encontrado"
-                else:
-                    status_msg = "Nada para colar"
-            
             # / (Grep Search)
             elif key_code == ord('/'):
                 query = ui.prompt("Grep: ")
@@ -625,46 +936,9 @@ def main(stdscr, filepath):
         sidebar_w = 25 if sidebar_visible else 0
         total_margin = sidebar_w + gutter_width
         content_start_y = 1 if tab_info else 0
-
-        # Ctrl+Space (Autocomplete) - ASCII 0
-        if key_code == config.get_key("autocomplete"):
-            completions, prefix = current_editor.get_completions()
-            if completions:
-                idx = 0
-                while True:
-                    # Redesenha editor e depois o popup
-                    ui.draw(editors_to_draw, active_split, split_mode, "Autocompletar...", filepaths_to_draw, tab_info,
-                            sidebar_items, sidebar_idx, sidebar_focus, sidebar_visible, sidebar_path)
-                    
-                    ui.draw_autocomplete(completions, idx, current_editor, content_start_y, total_margin)
-                    
-                    ch = ui.get_input()
-                    
-                    if ch == curses.KEY_UP: # get_input agora pode retornar int ou str, mas KEY_UP é int
-                        idx = (idx - 1) % len(completions)
-                    elif ch == curses.KEY_DOWN:
-                        idx = (idx + 1) % len(completions)
-                    elif isinstance(ch, int) and ch in (10, 13, 9): # Enter ou Tab
-                        completion = completions[idx]
-                        # Insere o restante da palavra
-                        remainder = completion[len(prefix):]
-                        for c in remainder:
-                            current_editor.insert_char(c)
-                        break
-                    elif ch == 27: # Esc (int)
-                        break
-                    else:
-                        # Sai do modo autocomplete e processa a tecla normalmente no próximo loop?
-                        # Para simplicidade, apenas sai.
-                        break
-            continue
-
-        # F1 (Help)
-        if key_code == config.get_key("help"):
-            ui.show_help()
         
         # Mouse Handling
-        elif key_code == curses.KEY_MOUSE:
+        if key_code == curses.KEY_MOUSE:
             # Calculate split dimensions for mouse click
             split_dims = {'sep': 0}
             if split_mode == 1: split_dims['sep'] = (ui.width - total_margin) // 2 + total_margin
@@ -751,27 +1025,6 @@ def main(stdscr, filepath):
         elif key_code in (566, 525): # Alt+Up, Alt+Down (xterm)
             if key_code == 566: current_editor.move_line_up()
             else: current_editor.move_line_down()
-
-        # Ctrl+A (Select All)
-        elif key_code == config.get_key("select_all"):
-            current_editor.select_all()
-            status_msg = "Selecionado tudo"
-
-        # Ctrl+D (Duplicate Line)
-        elif key_code == config.get_key("duplicate_line"):
-            current_editor.duplicate_line()
-            status_msg = "Linha duplicada"
-
-        # Ctrl+K (Delete Line)
-        elif key_code == config.get_key("delete_line"):
-            current_editor.delete_current_line()
-            status_msg = "Linha deletada"
-
-        # Ctrl+/ (Toggle Comment) - ASCII 31 usually or handled differently
-        # Vamos usar Ctrl+_ (ASCII 31) como proxy se Ctrl+/ não funcionar, ou mapear explicitamente
-        elif key_code == config.get_key("toggle_comment") or key_code == 47: # 47 é '/' mas com Ctrl pode variar
-            current_editor.toggle_comment()
-            status_msg = "Comentário alternado"
         
         # Enter
         elif key_code in (10, 13, curses.KEY_ENTER):
@@ -781,10 +1034,6 @@ def main(stdscr, filepath):
         elif key_code in (curses.KEY_BACKSPACE, 127, 8):
             current_editor.delete_char()
         
-        # Delete (KEY_DC)
-        elif key_code == config.get_key("delete_forward"):
-            current_editor.delete_forward()
-
         # Tab (Indent)
         elif key_code == 9:
             if not current_editor.expand_snippet(config.snippets):
@@ -793,30 +1042,6 @@ def main(stdscr, filepath):
         # Shift+Tab (Dedent) - KEY_BTAB
         elif key_code == curses.KEY_BTAB:
             current_editor.dedent_selection()
-        
-        # Ctrl+S (Save) - ASCII 19
-        elif key_code == config.get_key("save"):
-            try:
-                tab_manager.save_current_file()
-                status_msg = "Arquivo salvo com sucesso!"
-            except Exception as e:
-                status_msg = f"Erro ao salvar: {str(e)}"
-
-        # Ctrl+Q (Quit) - ASCII 17
-        elif key_code == config.get_key("quit"):
-            if tab_manager.check_all_modified():
-                status_msg = "Arquivo modificado! Ctrl+S para salvar ou Ctrl+Q novamente para forçar saída."
-                # Pequena lógica para confirmar saída forçada
-                ui.draw(editors_to_draw, active_split, split_mode, status_msg, filepaths_to_draw, tab_info,
-                        sidebar_items, sidebar_idx, sidebar_focus, sidebar_visible, sidebar_path)
-                confirm = ui.get_input()
-                if confirm == 17: # Ctrl+Q de novo
-                    break
-                elif confirm == 19: # Ctrl+S (int)
-                    tab_manager.save_current_file()
-                    break
-            else:
-                break
         
         # Caracteres imprimíveis
         elif (isinstance(key, str) and key.isprintable()) or (isinstance(key_code, int) and 32 <= key_code <= 126):
@@ -827,264 +1052,6 @@ def main(stdscr, filepath):
                 current_editor.cx += 1
             else:
                 current_editor.insert_char(char, auto_close=True)
-        
-        # Ctrl+F (Find) - ASCII 6
-        elif key_code == config.get_key("find"):
-            query = ui.prompt("Find: ")
-            if query:
-                location = current_editor.find(query)
-                if location:
-                    current_editor.cy, current_editor.cx = location
-                    status_msg = f"Encontrado em Ln {location[0]+1}, Col {location[1]+1}"
-                else:
-                    status_msg = f"'{query}' não encontrado"
-            else:
-                status_msg = "" # Limpa status se a busca for cancelada
-
-        # Alt+F (Find Regex)
-        elif key_code == config.get_key("find_regex"):
-            query = ui.prompt("Regex Find: ")
-            if query:
-                location = current_editor.find_regex(query)
-                if location:
-                    current_editor.cy, current_editor.cx = location
-                    status_msg = f"Regex encontrado em Ln {location[0]+1}, Col {location[1]+1}"
-                else:
-                    status_msg = f"Regex '{query}' não encontrado"
-            else:
-                status_msg = ""
-
-        # Ctrl+G (Find Next) - ASCII 7
-        elif key_code == config.get_key("find_next"):
-            location = current_editor.find_next()
-            if location:
-                current_editor.cy, current_editor.cx = location
-                status_msg = f"Encontrado em Ln {location[0] + 1}, Col {location[1] + 1}"
-            else:
-                status_msg = f"Nenhuma ocorrência encontrada"
-
-        # Ctrl+R (Replace All) - ASCII 18
-        elif key_code == config.get_key("replace"):
-            find_str = ui.prompt("Substituir: ")
-            if find_str:
-                replace_str = ui.prompt(f"Substituir '{find_str}' por: ")
-                if replace_str is not None: # Permite string vazia
-                    count = current_editor.replace_all(find_str, replace_str)
-                    status_msg = f"{count} ocorrências substituídas."
-                else:
-                    status_msg = "Substituição cancelada."
-            else:
-                status_msg = "Substituição cancelada."
-
-        # Alt+R (Replace Regex)
-        elif key_code == config.get_key("replace_regex"):
-            find_str = ui.prompt("Regex Substituir: ")
-            if find_str:
-                replace_str = ui.prompt(f"Substituir Regex '{find_str}' por: ")
-                if replace_str is not None:
-                    count = current_editor.replace_all_regex(find_str, replace_str)
-                    if count == -1:
-                        status_msg = "Erro na expressão regular."
-                    else:
-                        status_msg = f"{count} ocorrências substituídas (Regex)."
-                else:
-                    status_msg = "Substituição cancelada."
-            else:
-                status_msg = "Substituição cancelada."
-
-        # Ctrl+C (Copy) - ASCII 3
-        elif key_code == config.get_key("copy"):
-            current_editor.copy()
-            status_msg = "Copiado para a área de transferência"
-
-        # Ctrl+X (Cut) - ASCII 24
-        elif key_code == config.get_key("cut"):
-            current_editor.cut()
-            status_msg = "Recortado para a área de transferência"
-
-        # Ctrl+V (Paste) - ASCII 22
-        elif key_code == config.get_key("paste"):
-            current_editor.paste()
-            status_msg = "Colado"
-
-        # Ctrl+Z (Undo) - ASCII 26
-        elif key_code == config.get_key("undo"):
-            if current_editor.undo():
-                status_msg = "Desfeito"
-            else:
-                status_msg = "Nada para desfazer"
-
-        # Ctrl+Y (Redo) - ASCII 25
-        elif key_code == config.get_key("redo"):
-            if current_editor.redo():
-                status_msg = "Refeito"
-            else:
-                status_msg = "Nada para refazer"
-
-        # Ctrl+O (Open File) - ASCII 15
-        elif key_code == config.get_key("open"):
-            filename_to_open = ui.prompt("Abrir arquivo: ")
-            if filename_to_open:
-                try:
-                    tab_manager.open_file(filename_to_open)
-                    status_msg = f"Arquivo '{filename_to_open}' aberto."
-                except Exception as e:
-                    status_msg = f"Erro ao abrir arquivo: {str(e)}"
-            else:
-                status_msg = "Abertura de arquivo cancelada."
-
-        # Ctrl+L (Go to Line) - ASCII 12
-        elif key_code == config.get_key("goto_line"):
-            line_str = ui.prompt("Ir para linha: ")
-            if line_str:
-                try:
-                    line_num = int(line_str)
-                    if current_editor.goto_line(line_num):
-                        status_msg = f"Movido para linha {line_num}"
-                    else:
-                        status_msg = "Número de linha inválido"
-                except ValueError:
-                    status_msg = "Entrada inválida"
-
-        # F12 (Go to Definition)
-        elif key_code == config.get_key("definition"):
-            word = current_editor.get_word_under_cursor()
-            if word:
-                loc = current_editor.find_definition(word)
-                if loc:
-                    current_editor.cy, current_editor.cx = loc
-                    status_msg = f"Definição de '{word}' encontrada."
-                else:
-                    status_msg = f"Definição de '{word}' não encontrada."
-
-        # Go to Symbol (Ctrl+T / Ctrl+Shift+O)
-        elif key_code == config.get_key("goto_symbol"):
-            symbols = current_editor.get_symbols()
-            if symbols:
-                idx = 0
-                while True:
-                    ui.draw(editors_to_draw, active_split, split_mode, "Go to Symbol...", filepaths_to_draw, tab_info,
-                            sidebar_items, sidebar_idx, sidebar_focus, sidebar_visible, sidebar_path, system_status)
-                    ui.draw_symbol_picker(symbols, idx)
-                    
-                    ch = ui.get_input()
-                    if ch == curses.KEY_UP:
-                        idx = (idx - 1) % len(symbols)
-                    elif ch == curses.KEY_DOWN:
-                        idx = (idx + 1) % len(symbols)
-                    elif isinstance(ch, int) and ch in (10, 13): # Enter
-                        line_num = symbols[idx][0]
-                        current_editor.goto_line(line_num + 1)
-                        status_msg = f"Saltou para símbolo na linha {line_num + 1}"
-                        break
-                    elif ch == 27: # Esc
-                        break
-            else:
-                status_msg = "Nenhum símbolo encontrado."
-
-        # Bookmarks
-        elif key_code == config.get_key("toggle_bookmark"):
-            current_editor.toggle_bookmark()
-            status_msg = "Marcador alternado."
-        elif key_code == config.get_key("next_bookmark"):
-            current_editor.next_bookmark()
-            status_msg = "Próximo marcador."
-        elif key_code == config.get_key("prev_bookmark"):
-            current_editor.prev_bookmark()
-            status_msg = "Marcador anterior."
-
-        # Jump to Matching Bracket (Ctrl+B default in new config)
-        elif key_code == config.get_key("jump_bracket"):
-            match = current_editor.get_matching_bracket()
-            if match:
-                current_editor.cy, current_editor.cx = match
-                status_msg = "Saltou para parêntese correspondente."
-
-        # Toggle Split (Ctrl+P)
-        elif key_code == config.get_key("toggle_split"):
-            split_mode = (split_mode + 1) % 3
-            status_msg = f"Modo Split: {['Nenhum', 'Vertical', 'Horizontal'][split_mode]}"
-
-        # Switch Focus (F6)
-        elif key_code == config.get_key("switch_focus"):
-            if split_mode != 0:
-                active_split = 1 - active_split
-
-        # Toggle Fold (F10)
-        elif key_code == config.get_key("toggle_fold"):
-            current_editor.toggle_fold()
-            status_msg = "Dobra alternada."
-
-        # Export HTML (F7)
-        elif key_code == config.get_key("export_html"):
-            default_name = os.path.basename(current_filepath) + ".html"
-            out_path = ui.prompt(f"Exportar HTML para ({default_name}): ")
-            if not out_path: out_path = default_name
-            
-            if html_exporter.export(current_editor.lines, out_path):
-                status_msg = f"Exportado para {out_path}"
-            else:
-                status_msg = "Erro ao exportar HTML."
-
-        # Open Config (Alt+J)
-        elif key_code == config.get_key("open_config"):
-            try:
-                tab_manager.open_file(os.path.abspath(config.filepath))
-                status_msg = "Configuração aberta."
-            except Exception as e:
-                status_msg = f"Erro ao abrir configuração: {e}"
-
-        # Shift+C (Open Settings)
-        elif key_code == config.get_key("open_settings"):
-            config_win = ConfigWindow(ui, config)
-            config_win.run()
-            # After closing, a restart is needed to apply some changes (like colors)
-            status_msg = "Settings closed. Restart to apply all changes."
-            # Force a full redraw
-            stdscr.clear()
-            continue
-
-        # Ctrl+K (Open Folder)
-        elif key_code == config.get_key("open_folder"):
-            folder_path = ui.prompt("Abrir Pasta: ")
-            if folder_path:
-                folder_path = os.path.expanduser(folder_path)
-                if os.path.isdir(folder_path):
-                    sidebar_path = os.path.abspath(folder_path)
-                    project_root = sidebar_path
-                    session_manager.save_sidebar_path(sidebar_path)
-                    sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
-                    sidebar_idx = 0
-                    status_msg = f"Pasta de trabalho: {sidebar_path}"
-                else:
-                    status_msg = "Diretório inválido."
-            continue
-
-        # Ctrl+W (Close Tab) - ASCII 23
-        elif key_code == config.get_key("close_tab"):
-            editor_to_close = tab_manager.get_current_editor()
-            if editor_to_close.is_modified:
-                prompt_msg = f"Salvar '{tab_manager.get_current_filepath()}'? (s/n/c): "
-                choice = (ui.prompt(prompt_msg) or "").lower()
-                
-                if choice == 's':
-                    try:
-                        tab_manager.save_current_file()
-                    except Exception as e:
-                        status_msg = f"Erro ao salvar: {e}"
-                        continue # Não fecha a aba se o salvamento falhar
-                elif choice == 'c':
-                    status_msg = "Fechamento cancelado."
-                    continue
-                # Se for 'n' ou qualquer outra coisa, apenas prossegue para fechar
-
-            if tab_manager.close_current_tab():
-                status_msg = "Aba fechada."
-                # Update indices after closing
-                if split_tab_indices[active_split] >= len(tab_manager.open_tabs):
-                    split_tab_indices[active_split] = max(0, len(tab_manager.open_tabs) - 1)
-                
-            continue # Recomeça o loop para redesenhar com a nova aba (ou sair)
 
         # PageUp (Switch Tab Left) - curses.KEY_PPAGE
         elif key_code == curses.KEY_PPAGE:
