@@ -65,7 +65,11 @@ class Config:
             "toggle_bookmark": curses.KEY_F3,
             "next_bookmark": curses.KEY_F4,
             "prev_bookmark": curses.KEY_F5,
-            "jump_bracket": 29, # Ctrl+]
+            "jump_bracket": 29, # Ctrl+],
+            "prev_tab": 545, # Ctrl+Left
+            "next_tab": 560, # Ctrl+Right
+            "move_word_left": curses.KEY_PPAGE,
+            "move_word_right": curses.KEY_NPAGE,
             "toggle_split": 240, # Alt+P
             "switch_focus": curses.KEY_F11,
             "toggle_fold": curses.KEY_F10,
@@ -77,7 +81,7 @@ class Config:
             "toggle_right_sidebar": 8, # Ctrl+H
             "open_settings": curses.KEY_F6,
             "open_git_window": 7, # Ctrl+G
-            "open_folder": 11, # Ctrl+K
+            "open_folder": 239, # Alt+o
             "set_root": 80, # Shift+P
             "fuzzy_find_file": 16, # Ctrl+P
             "toggle_structure": 18, # Ctrl+R

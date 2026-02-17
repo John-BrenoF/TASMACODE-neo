@@ -99,40 +99,39 @@ class UI:
         """Atualiza dimensões se o terminal for redimensionado."""
         self.height, self.width = self.stdscr.getmaxyx()
 
-    def get_mouse_click(self, content_start_y, gutter_width, split_mode, active_split, split_dims):
-        """Traduz evento de mouse para coordenadas do arquivo."""
-        try:
-            _, mx, my, _, _ = curses.getmouse()
-            
-            # Determina em qual split o clique ocorreu
-            clicked_split = 0
-            if split_mode == 1: # Vertical
-                if mx >= split_dims['sep']:
-                    clicked_split = 1
-            elif split_mode == 2: # Horizontal
-                if my >= split_dims['sep']:
-                    clicked_split = 1
-            
-            return clicked_split, my, mx
-        except curses.error:
-            return None
+    def translate_mouse_to_editor(self, mx, my, content_start_y, gutter_width, split_mode, active_split, split_dims):
+        """Traduz coordenadas de tela (mx, my) para coordenadas do editor."""
+        # Determina em qual split o clique ocorreu
+        clicked_split = 0
+        if split_mode == 1: # Vertical
+            if mx >= split_dims['sep']:
+                clicked_split = 1
+        elif split_mode == 2: # Horizontal
+            if my >= split_dims['sep']:
+                clicked_split = 1
+        
+        return clicked_split, my, mx
 
     def get_tab_click_index(self, mx, my, tab_info, sidebar_width):
-        """Retorna o índice da aba clicada ou -1."""
-        if my != 0: return -1 # Abas estão na linha 0
+        """Retorna (índice, is_close_button) da aba clicada ou (-1, False)."""
+        if my != 0: return -1, False # Abas estão na linha 0
         
         current_x = sidebar_width
         for i, tab in enumerate(tab_info):
             filename = os.path.basename(tab['filepath'])
-            # Cálculo de largura deve bater com _draw_tabs:
-            # " " (1) + icon (1) + " " + filename + flags + " " (len) + "|" (1)
-            display_name = f" {filename}{'*' if tab['is_modified'] else ''} "
-            tab_width = 2 + len(display_name) + 1
+            # O cálculo da largura deve corresponder à lógica de desenho em UI.draw
+            name_part = f" {filename}{'*' if tab['is_modified'] else ''} "
+            close_part = "x "
+            
+            tab_width = len(name_part) + len(close_part) + 1 # Largura = nome + x + separador "|"
             
             if current_x <= mx < current_x + tab_width:
-                return i
+                # Check if click is on 'x'
+                if mx >= current_x + len(name_part) and mx < current_x + len(name_part) + len(close_part):
+                    return i, True
+                return i, False
             current_x += tab_width
-        return -1
+        return -1, False
 
     def _draw_python_line(self, y, line, offset_x, gutter_width):
         """Desenha uma linha com realce de sintaxe Python básico."""
@@ -348,11 +347,14 @@ class UI:
             current_x = editor_base_x
             for tab in tab_info:
                 filename = os.path.basename(tab['filepath'])
-                display_name = f" {filename}{'*' if tab['is_modified'] else ''} "
+                name_part = f" {filename}{'*' if tab['is_modified'] else ''} "
                 color_pair = curses.color_pair(4) if tab['is_current'] else curses.color_pair(5)
                 try:
-                    self.stdscr.addstr(tab_line_y, current_x, display_name, color_pair)
-                    current_x += len(display_name)
+                    self.stdscr.addstr(tab_line_y, current_x, name_part, color_pair)
+                    current_x += len(name_part)
+                    self.stdscr.addstr(tab_line_y, current_x, "x", color_pair | curses.A_BOLD)
+                    self.stdscr.addstr(tab_line_y, current_x + 1, " ", color_pair)
+                    current_x += 2
                     self.stdscr.addstr(tab_line_y, current_x, "|", curses.color_pair(5))
                     current_x += 1
                 except curses.error: break
@@ -580,26 +582,37 @@ class UI:
     def prompt(self, message=""):
         """
         Exibe um prompt na barra de status e retorna a entrada do usuário.
-        Retorna None se a entrada for vazia.
+        Retorna None se a entrada for vazia ou cancelada com Esc.
         """
         # Garante que o prompt espere o input do usuário (modo bloqueante)
         self.stdscr.timeout(-1)
         
-        self.stdscr.attron(curses.A_REVERSE)
-        self.stdscr.addstr(self.height - 1, 0, message)
-        self.stdscr.addstr(self.height - 1, len(message), " " * (self.width - len(message) - 1))
-        self.stdscr.attroff(curses.A_REVERSE)
-        
-        curses.echo()
-        self.stdscr.keypad(False)
-        
-        self.stdscr.move(self.height - 1, len(message))
-        input_str = self.stdscr.getstr(self.height - 1, len(message)).decode('utf-8')
-        
-        curses.noecho()
-        self.stdscr.keypad(True)
-        
-        return input_str if input_str else None
+        input_str = ""
+        curses.curs_set(1) # Mostra o cursor para o input
+
+        while True:
+            # Desenha o prompt na última linha
+            self.stdscr.attron(curses.A_REVERSE)
+            prompt_display = message + input_str
+            self.stdscr.addstr(self.height - 1, 0, prompt_display.ljust(self.width - 1))
+            self.stdscr.attroff(curses.A_REVERSE)
+            self.stdscr.move(self.height - 1, len(prompt_display))
+
+            key = self.get_input()
+            key_code = key if isinstance(key, int) else (ord(key) if isinstance(key, str) else -1)
+
+            if key_code in (10, 13): # Enter
+                break
+            elif key_code == 27: # Esc
+                input_str = None # Cancelado
+                break
+            elif key_code in (curses.KEY_BACKSPACE, 127, 8):
+                input_str = input_str[:-1]
+            elif isinstance(key, str) and key.isprintable():
+                input_str += key
+
+        curses.curs_set(0) # Esconde o cursor novamente
+        return input_str
 
     def draw_autocomplete(self, items, selected_idx, editor, content_start_y, total_left_margin):
         """Desenha o menu popup de autocompletar."""

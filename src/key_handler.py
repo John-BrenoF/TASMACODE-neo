@@ -5,15 +5,21 @@ class KeyHandler:
         self.actions = {} # name -> callback
         self.key_map = {} # key_code -> action_name
 
-    def register_action(self, name, callback, fixed_key=None):
-        """Registers an action. Maps to config key OR a fixed key code."""
+    def register_action(self, name, callback, fixed_keys=None):
+        """Registers an action. Maps to config key AND a list of fixed key codes."""
         self.actions[name] = callback
         key_code = self.config.get_key(name)
         
+        # Mapeia a tecla vinda da configuração (config.json)
         if key_code is not None and key_code != -1:
             self.key_map[key_code] = name
-        elif fixed_key is not None:
-            self.key_map[fixed_key] = name
+        # E também mapeia uma lista de teclas fixas de fallback, se fornecida
+        if fixed_keys:
+            if isinstance(fixed_keys, list):
+                for fk in fixed_keys:
+                    self.key_map[fk] = name
+            elif isinstance(fixed_keys, int): # Keep backward compatibility
+                 self.key_map[fixed_keys] = name
 
     def handle_key(self, key_code, context):
         """
