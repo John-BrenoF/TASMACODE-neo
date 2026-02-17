@@ -621,6 +621,109 @@ def main(stdscr, filepath):
             sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
             status_msg = "Sidebar atualizada."
 
+    # --- Generic UI Actions (Context Aware) ---
+    def action_ui_up():
+        nonlocal sidebar_idx
+        if sidebar_focus and sidebar_visible:
+            sidebar_idx = max(0, sidebar_idx - 1)
+        elif right_sidebar_focus:
+            # Plugin handle input logic could be delegated here if exposed
+            pass 
+        else:
+            current_editor.move_cursor(0, -1)
+
+    def action_ui_down():
+        nonlocal sidebar_idx
+        if sidebar_focus and sidebar_visible:
+            sidebar_idx = min(len(sidebar_items) - 1, sidebar_idx + 1)
+        else:
+            current_editor.move_cursor(0, 1)
+
+    def action_ui_left():
+        if not sidebar_focus:
+            current_editor.move_cursor(-1, 0)
+
+    def action_ui_right():
+        if not sidebar_focus:
+            current_editor.move_cursor(1, 0)
+
+    def action_ui_enter():
+        nonlocal sidebar_focus, sidebar_path, project_root, sidebar_items, sidebar_idx, status_msg, sidebar_mode
+        if sidebar_focus and sidebar_visible:
+            if not sidebar_items: return
+            
+            if sidebar_mode == 'search':
+                item = sidebar_items[sidebar_idx]
+                try:
+                    editor = tab_manager.open_file(item['file'])
+                    editor.goto_line(item['line'])
+                    sidebar_focus = False
+                    status_msg = f"Aberto: {os.path.basename(item['file'])}:{item['line']}"
+                except Exception as e:
+                    status_msg = f"Erro: {e}"
+            else:
+                name, is_dir = sidebar_items[sidebar_idx]
+                full_path = os.path.join(sidebar_path, name)
+                
+                if name == "..":
+                    sidebar_path = os.path.dirname(sidebar_path)
+                    session_manager.save_sidebar_path(sidebar_path)
+                    sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
+                    sidebar_idx = 0
+                elif is_dir:
+                    confirm_nav = config.settings.get("confirm_navigation", True)
+                    if confirm_nav:
+                        target_abs = os.path.abspath(full_path)
+                        root_abs = os.path.abspath(project_root)
+                        is_inside = (target_abs == root_abs) or target_abs.startswith(os.path.join(root_abs, ""))
+                        if not is_inside:
+                            confirm = ui.prompt(f"Entrar na pasta '{name}'? (s/n): ")
+                            if not confirm or confirm.lower() != 's':
+                                status_msg = "Navegação cancelada."
+                                return
+                    sidebar_path = full_path
+                    session_manager.save_sidebar_path(sidebar_path)
+                    sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
+                    sidebar_idx = 0
+                else:
+                    try:
+                        tab_manager.open_file(full_path)
+                        sidebar_focus = False # Retorna foco ao editor
+                        status_msg = f"Aberto: {name}"
+                    except Exception as e:
+                        status_msg = f"Erro: {e}"
+        else:
+            current_editor.insert_newline()
+
+    def action_ui_esc():
+        nonlocal sidebar_focus, right_sidebar_focus, sidebar_mode, sidebar_items, show_hidden, status_msg
+        if right_sidebar_focus:
+            right_sidebar_focus = False
+            status_msg = "Foco no Editor"
+        elif sidebar_focus:
+            if sidebar_mode == 'search':
+                sidebar_mode = 'files'
+                sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
+                sidebar_idx = 0
+                status_msg = "Modo de arquivos."
+            else:
+                sidebar_focus = False
+        elif current_editor.has_selection():
+            current_editor.clear_selection()
+
+    def action_ui_backspace():
+        if not sidebar_focus:
+            current_editor.delete_char()
+
+    def action_ui_tab():
+        if not sidebar_focus:
+            if not current_editor.expand_snippet(config.snippets):
+                current_editor.indent_selection()
+
+    def action_ui_shift_tab():
+        if not sidebar_focus:
+            current_editor.dedent_selection()
+
     # Registrando ações
     key_handler.register_action("fuzzy_find_file", action_fuzzy_find)
     key_handler.register_action("macro_rec", action_macro_rec)
@@ -659,6 +762,19 @@ def main(stdscr, filepath):
     key_handler.register_action("new_dir", action_sidebar_new_dir)
     key_handler.register_action("toggle_hidden", action_sidebar_toggle_hidden)
     key_handler.register_action("refresh", action_sidebar_refresh)
+    
+    # Generic UI Actions (Fixed Keys)
+    key_handler.register_action("ui_up", action_ui_up, fixed_key=curses.KEY_UP)
+    key_handler.register_action("ui_down", action_ui_down, fixed_key=curses.KEY_DOWN)
+    key_handler.register_action("ui_left", action_ui_left, fixed_key=curses.KEY_LEFT)
+    key_handler.register_action("ui_right", action_ui_right, fixed_key=curses.KEY_RIGHT)
+    key_handler.register_action("ui_enter", action_ui_enter, fixed_key=10) # Enter
+    key_handler.register_action("ui_enter_alt", action_ui_enter, fixed_key=13) # Enter
+    key_handler.register_action("ui_enter_curses", action_ui_enter, fixed_key=curses.KEY_ENTER)
+    key_handler.register_action("ui_esc", action_ui_esc, fixed_key=27) # Esc
+    key_handler.register_action("ui_backspace", action_ui_backspace, fixed_key=curses.KEY_BACKSPACE)
+    key_handler.register_action("ui_tab", action_ui_tab, fixed_key=9)
+    key_handler.register_action("ui_shift_tab", action_ui_shift_tab, fixed_key=curses.KEY_BTAB)
     
     # Mais ações simples via lambda onde possível ou funções adicionais
     key_handler.register_action("definition", lambda: (
@@ -843,71 +959,15 @@ def main(stdscr, filepath):
 
         # Lógica da Sidebar Direita (Chat)
         if right_sidebar_focus and ui.right_sidebar_plugin and ui.right_sidebar_plugin.is_visible:
-            if key_code == 27: # Esc para sair do foco
-                right_sidebar_focus = False
-                status_msg = "Foco no Editor"
-            else:
-                # Passa input para o plugin
-                if hasattr(ui.right_sidebar_plugin, 'handle_input'):
-                    ui.right_sidebar_plugin.handle_input(key_code)
+            # Passa input para o plugin (Esc é tratado pelo action_ui_esc agora)
+            if hasattr(ui.right_sidebar_plugin, 'handle_input'):
+                ui.right_sidebar_plugin.handle_input(key_code)
             continue
 
         # Lógica da Sidebar Esquerda (Arquivos)
-        elif sidebar_focus and sidebar_visible:
-            if key_code == curses.KEY_UP:
-                sidebar_idx = max(0, sidebar_idx - 1)
-            elif key_code == curses.KEY_DOWN:
-                sidebar_idx = min(len(sidebar_items) - 1, sidebar_idx + 1)
-            elif key_code in (10, 13): # Enter
-                if not sidebar_items: continue
-                
-                if sidebar_mode == 'search':
-                    item = sidebar_items[sidebar_idx]
-                    try:
-                        editor = tab_manager.open_file(item['file'])
-                        editor.goto_line(item['line'])
-                        sidebar_focus = False
-                        status_msg = f"Aberto: {os.path.basename(item['file'])}:{item['line']}"
-                    except Exception as e:
-                        status_msg = f"Erro: {e}"
-                else:
-                    name, is_dir = sidebar_items[sidebar_idx]
-                    full_path = os.path.join(sidebar_path, name)
-                    
-                    if name == "..":
-                        sidebar_path = os.path.dirname(sidebar_path)
-                        session_manager.save_sidebar_path(sidebar_path)
-                        sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
-                        sidebar_idx = 0
-                    elif is_dir:
-                        confirm_nav = config.settings.get("confirm_navigation", True)
-                        if confirm_nav:
-                            # Verifica se o destino está dentro da raiz do projeto
-                            target_abs = os.path.abspath(full_path)
-                            root_abs = os.path.abspath(project_root)
-                            is_inside = (target_abs == root_abs) or target_abs.startswith(os.path.join(root_abs, ""))
-                            
-                            if not is_inside:
-                                confirm = ui.prompt(f"Entrar na pasta '{name}'? (s/n): ")
-                                if not confirm or confirm.lower() != 's':
-                                    status_msg = "Navegação cancelada."
-                                    continue
-                        sidebar_path = full_path
-                        session_manager.save_sidebar_path(sidebar_path)
-                        sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
-                        sidebar_idx = 0
-                    else:
-                        try:
-                            tab_manager.open_file(full_path)
-                            sidebar_focus = False # Retorna foco ao editor
-                            status_msg = f"Aberto: {name}"
-                        except Exception as e:
-                            status_msg = f"Erro: {e}"
-            elif key_code == 27: # Esc
-                sidebar_focus = False
-            
-            # / (Grep Search)
-            elif key_code == ord('/'):
+        if sidebar_focus and sidebar_visible:
+            # Ações de navegação foram movidas para action_ui_*, mas a busca é específica
+            if key_code == ord('/'):
                 query = ui.prompt("Grep: ")
                 if query:
                     sidebar_items = file_handler.search_in_files(sidebar_path, query, show_hidden)
@@ -916,18 +976,8 @@ def main(stdscr, filepath):
                     status_msg = f"Busca: '{query}' ({len(sidebar_items)} resultados)"
                 else:
                     status_msg = "Busca cancelada."
-
-            # Esc (Sair do modo de busca ou da sidebar)
-            elif key_code == 27:
-                if sidebar_mode == 'search':
-                    sidebar_mode = 'files'
-                    sidebar_items = file_handler.list_directory(sidebar_path, show_hidden)
-                    sidebar_idx = 0
-                    status_msg = "Modo de arquivos."
-                else:
-                    sidebar_focus = False
-
-            continue
+                # Apenas continua se a tecla foi tratada aqui
+                continue
 
         # Se sidebar visível mas não focada, permite voltar o foco com Ctrl+E ou algo assim?
         # Vamos usar Ctrl+B para fechar ou re-focar?
@@ -993,21 +1043,6 @@ def main(stdscr, filepath):
             elif key_code == curses.KEY_SF: current_editor.move_cursor(0, 1)
             status_msg = "Selecionando texto"
 
-        # Navegação Básica
-        elif key_code in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT):
-            # Cancela a seleção se uma seta normal for pressionada
-            if current_editor.has_selection():
-                current_editor.clear_selection()
-
-            if key_code == curses.KEY_UP:
-                current_editor.move_cursor(0, -1)
-            elif key_code == curses.KEY_DOWN:
-                current_editor.move_cursor(0, 1)
-            elif key_code == curses.KEY_LEFT:
-                current_editor.move_cursor(-1, 0)
-            elif key_code == curses.KEY_RIGHT:
-                current_editor.move_cursor(1, 0)
-
         # Home / End (Início/Fim da Linha)
         elif key_code == curses.KEY_HOME:
             current_editor.go_to_start_of_line()
@@ -1028,23 +1063,6 @@ def main(stdscr, filepath):
         elif key_code in (566, 525): # Alt+Up, Alt+Down (xterm)
             if key_code == 566: current_editor.move_line_up()
             else: current_editor.move_line_down()
-        
-        # Enter
-        elif key_code in (10, 13, curses.KEY_ENTER):
-            current_editor.insert_newline()
-        
-        # Backspace (ASCII 127 ou KEY_BACKSPACE)
-        elif key_code in (curses.KEY_BACKSPACE, 127, 8):
-            current_editor.delete_char()
-        
-        # Tab (Indent)
-        elif key_code == 9:
-            if not current_editor.expand_snippet(config.snippets):
-                current_editor.indent_selection()
-
-        # Shift+Tab (Dedent) - KEY_BTAB
-        elif key_code == curses.KEY_BTAB:
-            current_editor.dedent_selection()
         
         # Caracteres imprimíveis
         elif (isinstance(key, str) and key.isprintable()) or (isinstance(key_code, int) and 32 <= key_code <= 126):

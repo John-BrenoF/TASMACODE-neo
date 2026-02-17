@@ -65,7 +65,7 @@ class Config:
             "toggle_bookmark": curses.KEY_F3,
             "next_bookmark": curses.KEY_F4,
             "prev_bookmark": curses.KEY_F5,
-            "jump_bracket": 13, # Ctrl+M
+            "jump_bracket": 29, # Ctrl+]
             "toggle_split": 240, # Alt+P
             "switch_focus": curses.KEY_F11,
             "toggle_fold": curses.KEY_F10,
