@@ -12,7 +12,8 @@ class GlobalMenuBar:
             {"label": "Exibição", "options": ["Sidebar", "Chat IA", "Estrutura", "Split Vertical", "Split Horizontal"]},
             {"label": "Navegação", "options": ["Ir para Linha", "Ir para Símbolo", "Definição", "Buscar", "Substituir", "Buscar em Arquivos"]},
             {"label": "Plugins", "options": ["Loja (F2)", "Gerenciar"]},
-
+            {"label": "Configurações", "options": ["Abrir Configurações"]},
+            {"label": "Ajuda", "options": ["Ajuda (F1)", "Sobre"]}
         ]
         self.active_menu_index = -1
         self.selected_option_index = -1
