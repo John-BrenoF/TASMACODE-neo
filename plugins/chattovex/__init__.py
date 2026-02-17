@@ -119,16 +119,6 @@ class AIChatPlugin:
 
     def draw(self, stdscr, x, y, h, w):
         """Delega o desenho para o componente de UI."""
-        # Ajusta o timeout do curses para permitir animação
-        if self.is_processing or self.is_visible:
-            try:
-                self.ui.stdscr.timeout(100 if self.is_processing else 500) # 100ms spinner, 500ms cursor
-            except: pass
-        else:
-            try:
-                self.ui.stdscr.timeout(-1) # Blocking (padrão)
-            except: pass
-            
         self.ui_component.draw(stdscr, x, y, h, w, self.is_visible, self.is_processing)
         if self.menu_active:
             self.ui_component.draw_menu(stdscr, x, y, h, w, self.menu_options, self.menu_index)

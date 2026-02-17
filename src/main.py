@@ -790,17 +790,26 @@ def main(stdscr, filepath):
             tab['editor'].clean_dirty()
 
         # Linter Logic (Debounce)
-        if lint_needed and (time.time() - last_keypress_time > 1.0):
+        if lint_needed and (time.time() - last_keypress_time > 0.8):
             linter.lint(current_editor, current_filepath)
             lint_needed = False
 
-        # Input Handling
+        # --- Timeout and Input Handling ---
+        # Define timeout para animações (spinner do chat)
+        is_chat_processing = ui.right_sidebar_plugin and hasattr(ui.right_sidebar_plugin, 'is_processing') and ui.right_sidebar_plugin.is_processing
+        if is_chat_processing:
+            ui.stdscr.timeout(100)
+        else:
+            ui.stdscr.timeout(-1) # Modo bloqueante
+
         if input_queue:
             key = input_queue.pop(0)
-            # Pequeno delay visual opcional para ver a macro executando
             curses.napms(10)
         else:
-            key = ui.get_input()
+            try:
+                key = ui.get_input()
+            except curses.error: # Timeout
+                key = None
             
         # Se houve input, atualiza timer do linter
         if key is not None:

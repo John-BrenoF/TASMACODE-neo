@@ -580,26 +580,37 @@ class UI:
     def prompt(self, message=""):
         """
         Exibe um prompt na barra de status e retorna a entrada do usuário.
-        Retorna None se a entrada for vazia.
+        Retorna None se a entrada for vazia ou cancelada com Esc.
         """
         # Garante que o prompt espere o input do usuário (modo bloqueante)
         self.stdscr.timeout(-1)
         
-        self.stdscr.attron(curses.A_REVERSE)
-        self.stdscr.addstr(self.height - 1, 0, message)
-        self.stdscr.addstr(self.height - 1, len(message), " " * (self.width - len(message) - 1))
-        self.stdscr.attroff(curses.A_REVERSE)
-        
-        curses.echo()
-        self.stdscr.keypad(False)
-        
-        self.stdscr.move(self.height - 1, len(message))
-        input_str = self.stdscr.getstr(self.height - 1, len(message)).decode('utf-8')
-        
-        curses.noecho()
-        self.stdscr.keypad(True)
-        
-        return input_str if input_str else None
+        input_str = ""
+        curses.curs_set(1) # Mostra o cursor para o input
+
+        while True:
+            # Desenha o prompt na última linha
+            self.stdscr.attron(curses.A_REVERSE)
+            prompt_display = message + input_str
+            self.stdscr.addstr(self.height - 1, 0, prompt_display.ljust(self.width - 1))
+            self.stdscr.attroff(curses.A_REVERSE)
+            self.stdscr.move(self.height - 1, len(prompt_display))
+
+            key = self.get_input()
+            key_code = key if isinstance(key, int) else (ord(key) if isinstance(key, str) else -1)
+
+            if key_code in (10, 13): # Enter
+                break
+            elif key_code == 27: # Esc
+                input_str = None # Cancelado
+                break
+            elif key_code in (curses.KEY_BACKSPACE, 127, 8):
+                input_str = input_str[:-1]
+            elif isinstance(key, str) and key.isprintable():
+                input_str += key
+
+        curses.curs_set(0) # Esconde o cursor novamente
+        return input_str
 
     def draw_autocomplete(self, items, selected_idx, editor, content_start_y, total_left_margin):
         """Desenha o menu popup de autocompletar."""

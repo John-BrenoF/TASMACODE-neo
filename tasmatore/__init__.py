@@ -47,15 +47,16 @@ class TasmaStorePlugin:
         self.refresh_plugins_list()
         self.selected_idx = 0
         
-        # Configuração temporária do curses para input de texto
         curses.curs_set(0)
-        stdscr.timeout(100) # Timeout para permitir animação de loading
 
         while self.active:
             self.ui.draw(self.plugins, self.selected_idx, self.focus, self.confirm_delete_plugin)
             
             if self.ui.is_loading:
                 self.ui.animation_frame += 1
+                stdscr.timeout(100) # Animação não-bloqueante
+            else:
+                stdscr.timeout(-1) # Bloqueante
             
             try:
                 key = stdscr.get_wch()
