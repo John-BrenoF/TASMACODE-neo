@@ -5,12 +5,15 @@ class KeyHandler:
         self.actions = {} # name -> callback
         self.key_map = {} # key_code -> action_name
 
-    def register_action(self, name, callback):
-        """Registers an action and maps it to a key based on config."""
+    def register_action(self, name, callback, fixed_key=None):
+        """Registers an action. Maps to config key OR a fixed key code."""
         self.actions[name] = callback
         key_code = self.config.get_key(name)
-        if key_code is not None:
+        
+        if key_code is not None and key_code != -1:
             self.key_map[key_code] = name
+        elif fixed_key is not None:
+            self.key_map[fixed_key] = name
 
     def handle_key(self, key_code, context):
         """
