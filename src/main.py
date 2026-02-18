@@ -750,26 +750,26 @@ class TasmaApp:
                         self.status_msg = "Erro ao renomear"
 
     def action_sidebar_new_file(self):
-        if self.sidebar_focus and self.sidebar_visible:
-            name = self.ui.prompt("Novo arquivo: ")
-            if name:
-                path = os.path.join(self.sidebar_path, name)
-                if self.file_handler.create_file(path):
+        name = self.ui.prompt("Novo arquivo: ")
+        if name:
+            path = os.path.join(self.sidebar_path, name)
+            if self.file_handler.create_file(path):
+                if self.sidebar_visible:
                     self.sidebar_items = self.file_handler.list_directory(self.sidebar_path, self.show_hidden)
-                    self.status_msg = f"Arquivo criado: {name}"
-                else:
-                    self.status_msg = "Erro ao criar arquivo"
+                self.status_msg = f"Arquivo criado: {name}"
+            else:
+                self.status_msg = "Erro ao criar arquivo"
 
     def action_sidebar_new_dir(self):
-        if self.sidebar_focus and self.sidebar_visible:
-            name = self.ui.prompt("Nova pasta: ")
-            if name:
-                path = os.path.join(self.sidebar_path, name)
-                if self.file_handler.create_directory(path):
+        name = self.ui.prompt("Nova pasta: ")
+        if name:
+            path = os.path.join(self.sidebar_path, name)
+            if self.file_handler.create_directory(path):
+                if self.sidebar_visible:
                     self.sidebar_items = self.file_handler.list_directory(self.sidebar_path, self.show_hidden)
-                    self.status_msg = f"Pasta criada: {name}"
-                else:
-                    self.status_msg = "Erro ao criar pasta"
+                self.status_msg = f"Pasta criada: {name}"
+            else:
+                self.status_msg = "Erro ao criar pasta"
 
     def action_sidebar_toggle_hidden(self):
         if self.sidebar_focus and self.sidebar_visible:
