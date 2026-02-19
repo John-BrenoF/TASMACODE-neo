@@ -4,18 +4,32 @@ import keyword
 
 class HtmlExporter:
     def __init__(self):
-        self.PYTHON_KEYWORDS = set(keyword.kwlist)
+        # Compila a Regex para tokenização (prioridade importa: string/comentário primeiro)
+        # Strings lidam com escapes básicos
+        self.token_regex = re.compile(
+            r'(?P<string>"[^"\\]*(?:\\.[^"\\]*)*"|\'[^\'\\]*(?:\\.[^\'\\]*)*\')|'
+            r'(?P<comment>#.*)|'
+            r'(?P<decorator>@\w+)|'
+            r'(?P<keyword>\b(?:' + '|'.join(keyword.kwlist) + r')\b)|'
+            r'(?P<number>\b\d+(\.\d+)?\b)|'
+            r'(?P<class>\b[A-Z]\w*\b)|'
+            r'(?P<operator>[+\-*/%=<>!&|^~]+)',
+            re.DOTALL
+        )
+        
         # Estilos CSS básicos para o HTML gerado
         self.css = """
-        body { background-color: #ffffff; color: #000000; font-family: monospace; white-space: pre; }
-        .keyword { color: #aa5500; font-weight: bold; }
-        .string { color: #00aa00; }
-        .comment { color: #00aaaa; font-style: italic; }
-        .number { color: #aa00aa; }
-        .decorator { color: #aa00aa; }
-        .class { color: #aa0000; font-weight: bold; }
-        .linenum { color: #888888; border-right: 1px solid #ccc; margin-right: 10px; padding-right: 5px; user-select: none; display: inline-block; width: 30px; text-align: right;}
-        .line { display: block; }
+        body { background-color: #282a36; color: #f8f8f2; font-family: 'Consolas', 'Monaco', monospace; white-space: pre; margin: 0; padding: 10px; }
+        .line { display: block; min-height: 1.2em; }
+        .linenum { color: #6272a4; border-right: 1px solid #44475a; margin-right: 10px; padding-right: 10px; user-select: none; display: inline-block; width: 40px; text-align: right; }
+        
+        .keyword { color: #ff79c6; font-weight: bold; }
+        .string { color: #f1fa8c; }
+        .comment { color: #6272a4; font-style: italic; }
+        .number { color: #bd93f9; }
+        .decorator { color: #50fa7b; }
+        .class { color: #8be9fd; font-style: italic; }
+        .operator { color: #ff79c6; }
         """
 
     def export(self, lines, output_path):
@@ -37,49 +51,21 @@ class HtmlExporter:
 
     def _format_line(self, line):
         """Aplica syntax highlighting simples e retorna HTML."""
+        if not line: return ""        
         result = []
-        i = 0
-        while i < len(line):
-            # Strings
-            if line[i] in "\"'":
-                quote_char = line[i]
-                j = i + 1
-                while j < len(line) and line[j] != quote_char:
-                    j += 1
-                j = min(j + 1, len(line))
-                token = line[i:j]
-                result.append(f'<span class="string">{html.escape(token)}</span>')
-                i = j
-                continue
+        last_pos = 0
+        
+        for match in self.token_regex.finditer(line):
+            # Adiciona texto não correspondido (espaços, pontuação simples)
+            if match.start() > last_pos:
+                result.append(html.escape(line[last_pos:match.start()])) 
             
-            # Comentários
-            if line[i] == '#':
-                token = line[i:]
-                result.append(f'<span class="comment">{html.escape(token)}</span>')
-                break # Fim da linha
-            
-            # Decoradores
-            if line[i] == '@':
-                j = i + 1
-                while j < len(line) and (line[j].isalnum() or line[j] == '_'): j += 1
-                token = line[i:j]
-                result.append(f'<span class="decorator">{html.escape(token)}</span>')
-                i = j
-                continue
-
-            # Palavras-chave e identificadores
-            if line[i].isalpha() or line[i] == '_':
-                j = i
-                while j < len(line) and (line[j].isalnum() or line[j] == '_'): j += 1
-                token = line[i:j]
-                if token in self.PYTHON_KEYWORDS: result.append(f'<span class="keyword">{html.escape(token)}</span>')
-                elif token == 'self' or token[0].isupper(): result.append(f'<span class="class">{html.escape(token)}</span>')
-                else: result.append(html.escape(token))
-                i = j
-                continue
-
-            # Outros caracteres
-            result.append(html.escape(line[i]))
-            i += 1
+            # Identifica o tipo de token e aplica a classe CSS
+            token_type = match.lastgroup
+            token_value = match.group(token_type)
+            result.append(f'<span class="{token_type}">{html.escape(token_value)}</span>')
+            last_pos = match.end()
+        
+        result.append(html.escape(line[last_pos:]))
             
         return "".join(result)
