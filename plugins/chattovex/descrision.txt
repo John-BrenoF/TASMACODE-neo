@@ -1,3 +1,3 @@
-assistene simples de IA para tarefas basicas 
-use /apikey (suas chave de api ) para configura 
+simple AI assistant for basic tasks
+use /apikey (your api key) to configure
 user ctrl + m pra abrir menu
