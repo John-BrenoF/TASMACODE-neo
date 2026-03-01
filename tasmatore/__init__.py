@@ -9,7 +9,7 @@ import re
 # Adiciona diretório atual ao path
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
-from .store_ui import StoreUI
+from .store_ui import StoreUI 
 from .installer import PluginInstaller
 
 class TasmaStorePlugin:

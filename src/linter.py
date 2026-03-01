@@ -2,7 +2,7 @@
 import threading
 import subprocess
 import sys
-import shutil
+import shutil   
 
 class Linter:
     def __init__(self):

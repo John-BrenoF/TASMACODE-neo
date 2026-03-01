@@ -1,18 +1,18 @@
 {
     "colors": {
-        "active_tab_bg": "WHITE",
-        "active_tab_fg": "BLACK",
-        "class": "BLUE",
+        "active_tab_bg": "MAGENTA",
+        "active_tab_fg": "WHITE",
+        "class": "CYAN",
         "comment": "BLUE",
         "inactive_tab_bg": "BLACK",
         "inactive_tab_fg": "WHITE",
-        "keyword": "WHITE",
+        "keyword": "MAGENTA",
         "number": "CYAN",
         "sidebar_bg": "BLACK",
         "sidebar_fg": "WHITE",
-        "statusbar_bg": "WHITE",
-        "statusbar_fg": "BLACK",
-        "string": "CYAN"
+        "statusbar_bg": "MAGENTA",
+        "statusbar_fg": "WHITE",
+        "string": "YELLOW"
     },
     "keys": {
         "autocomplete": 0,
