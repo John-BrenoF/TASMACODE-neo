@@ -3,3 +3,4 @@ session.json
 novo_arquivo.txt
 plugins/chattovex/chat_history.json
 session.json
+src/__pycache__/
