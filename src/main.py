@@ -5,6 +5,9 @@ import os
 import argparse
 import shutil
 import tempfile
+import queue
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from editor import Editor
 from ui import UI
 from file_handler import FileHandler
@@ -181,6 +184,14 @@ class TasmaApp:
         self.dragging_tab_idx = None
         self.split_ratio = 0.5
         self.dragging_split = False
+
+        # Fila de eventos para tarefas de plugin assíncronas
+        self.event_queue = queue.Queue()
+        self.plugin_executor = ThreadPoolExecutor(max_workers=4)  # Limita tarefas concorrentes
+        
+        # Inicia a thread que processa a fila de eventos
+        plugin_event_thread = threading.Thread(target=self.process_plugin_events, daemon=True)
+        plugin_event_thread.start()
         
         self.global_commands = {}
         
@@ -202,8 +213,9 @@ class TasmaApp:
 
     def load_plugins(self):
         plugin_context = {
-            'ui': self.ui, 'file_handler': self.file_handler, 'tab_manager': self.tab_manager,
-            'config': self.config, 'global_commands': self.global_commands
+            'ui': self.ui, 'file_handler': self.file_handler, 
+            'tab_manager': self.tab_manager, 'config': self.config, 
+            'global_commands': self.global_commands, 'event_queue': self.event_queue
         }
         self.plugin_manager.load_plugins(plugin_context)
         
@@ -220,9 +232,21 @@ class TasmaApp:
                     importlib.reload(tasmatore)
                 else:
                     import tasmatore
-                tasmatore.register(plugin_context)
+                tasmatore.register(plugin_context) # Passa o contexto completo
         except Exception as e:
             self.status_msg = f"Erro ao carregar TasmaStore: {e}"
+
+    def process_plugin_events(self):
+        """Processa eventos de plugins em background para não travar a UI."""
+        while True:
+            try:
+                event = self.event_queue.get()  # Bloqueia até um item estar disponível
+                if event and event.get('type') == 'plugin_task':
+                    # Submete a tarefa para o pool de threads
+                    self.plugin_executor.submit(event.get('callback'), *event.get('args', []), **event.get('kwargs', {}))
+            except Exception as e:
+                # Log de erro para depuração, sem travar o editor
+                print(f"Erro no processador de eventos de plugin: {e}", file=sys.stderr)
 
     @property
     def current_editor(self):
@@ -1067,6 +1091,10 @@ class TasmaApp:
             for tab in self.tab_manager.open_tabs:
                 tab['editor'].clean_dirty()
 
+            # Exibe status se houver tarefas de plugin na fila
+            if not self.event_queue.empty() and not self.status_msg:
+                self.status_msg = "Plugin executando em background..."
+
             if self.lint_needed and (time.time() - self.last_keypress_time > 1.0):
                 self.linter.lint(self.current_editor, self.current_filepath)
                 self.lint_needed = False
@@ -1281,8 +1309,13 @@ if __name__ == "__main__":
 
     try:
         def main_wrapper(stdscr):
-            app = TasmaApp(stdscr, args.filename)
-            app.run()
+            app = None
+            try:
+                app = TasmaApp(stdscr, args.filename)
+                app.run()
+            finally:
+                if app:
+                    app.plugin_executor.shutdown(wait=False)
         curses.wrapper(main_wrapper)
     except KeyboardInterrupt:
         pass
