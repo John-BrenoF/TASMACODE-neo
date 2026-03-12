@@ -1202,6 +1202,21 @@ class TasmaApp:
                     if action:
                         self.handle_menu_action(action)
                     continue
+                
+                # Sidebar Interaction
+                if self.sidebar_visible:
+                    sidebar_w = 25
+                    if self.ui.left_sidebar_plugin and self.ui.left_sidebar_plugin.is_visible:
+                        sidebar_w = 25 # Ajuste se usar plugin
+                    
+                    if mx < sidebar_w:
+                        idx = self.ui.get_sidebar_click_index(mx, my, self.sidebar_items, self.sidebar_idx, start_y=1, width=sidebar_w)
+                        if idx != -1:
+                            self.sidebar_idx = idx
+                            self.sidebar_focus = True
+                            if bstate & curses.BUTTON1_DOUBLE_CLICKED:
+                                self.action_ui_enter()
+                        continue
 
                 line_count = len(self.current_editor.lines)
                 gutter_width = len(str(line_count)) + 2

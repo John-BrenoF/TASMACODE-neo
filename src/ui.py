@@ -135,6 +135,26 @@ class UI:
             current_x += tab_width
         return -1, False
 
+    def get_sidebar_click_index(self, mx, my, items, selected_idx, start_y=0, width=25):
+        """Retorna o índice do item clicado na sidebar ou -1."""
+        # Header (1) + Divider (1) = 2 linhas de offset
+        list_start_y = start_y + 2
+        if my < list_start_y or mx >= width:
+            return -1
+        
+        max_items = self.height - list_start_y - 1
+        
+        scroll = 0
+        if selected_idx >= max_items:
+            scroll = selected_idx - max_items + 1
+            
+        clicked_row = my - list_start_y
+        index = scroll + clicked_row
+        
+        if 0 <= clicked_row < max_items and index < len(items):
+            return index
+        return -1, False
+
     def _draw_python_line(self, y, line, offset_x, gutter_width):
         """Desenha uma linha com realce de sintaxe Python básico."""
         i = 0
