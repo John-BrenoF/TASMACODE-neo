@@ -272,6 +272,29 @@ class Editor:
             return (self.cy, match.start())
         return None
 
+    def find_all(self, query, use_regex=False):
+        """Retorna todas as correspondências no arquivo como (line_idx, start, end, line_content)."""
+        matches = []
+        if not query: return matches
+        
+        if use_regex:
+            try:
+                regex = re.compile(query)
+                for i, line in enumerate(self.lines):
+                    for match in regex.finditer(line):
+                        matches.append((i, match.start(), match.end(), line))
+            except re.error:
+                pass
+        else:
+            for i, line in enumerate(self.lines):
+                start = 0
+                while True:
+                    idx = line.find(query, start)
+                    if idx == -1: break
+                    matches.append((i, idx, idx + len(query), line))
+                    start = idx + 1
+        return matches
+
     def replace_all(self, find_str, replace_str):
         """Substitui todas as ocorrências de find_str por replace_str."""
         if not find_str: return 0

@@ -85,7 +85,8 @@ class Config:
             "set_root": 80, # Shift+P
             "fuzzy_find_file": 16, # Ctrl+P
             "toggle_structure": 18, # Ctrl+R
-            "import_theme": 5 # Ctrl+E
+            "import_theme": 5, # Ctrl+E
+            "find_all_files": 225 # Alt+a
         }
         self.snippets = {
             "def": "def name(args):\n    pass",

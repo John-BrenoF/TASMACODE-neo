@@ -133,6 +133,20 @@ class TabManager:
                 
             item = self.open_tabs.pop(from_idx)
             self.open_tabs.insert(to_idx, item)
+    
+    def search_all_tabs(self, query, use_regex=False):
+        """Busca em todas as abas abertas e retorna formato compatível com sidebar."""
+        results = []
+        for tab in self.open_tabs:
+            filepath = tab['filepath']
+            editor = tab['editor']
+            matches = editor.find_all(query, use_regex)
+            for m in matches:
+                # m: (line_idx, start, end, line_content)
+                results.append({
+                    'file': filepath, 'line': m[0] + 1, 'content': m[3].strip(), 'is_dir': False
+                })
+        return results
 
 class TasmaApp:
     def __init__(self, stdscr, filepath):
@@ -298,6 +312,7 @@ class TasmaApp:
         kh.register_action("goto_line", self.action_goto_line)
         kh.register_action("goto_symbol", self.action_goto_symbol)
         kh.register_action("fuzzy_find_file", self.action_fuzzy_find)
+        kh.register_action("find_all_files", self.action_find_all_files)
         
         # Tabs / Splits
         kh.register_action("close_tab", self.action_close_tab)
@@ -642,6 +657,21 @@ class TasmaApp:
             self.status_msg = f"Encontrado em Ln {location[0] + 1}, Col {location[1] + 1}"
         else:
             self.status_msg = f"Nenhuma ocorrência encontrada"
+
+    def action_find_all_files(self):
+        query = self.ui.prompt("Buscar em todas as abas: ")
+        if query:
+            results = self.tab_manager.search_all_tabs(query)
+            if results:
+                self.sidebar_items = results
+                self.sidebar_mode = 'search'
+                self.sidebar_idx = 0
+                if not self.sidebar_visible:
+                    self.sidebar_visible = True
+                self.sidebar_focus = True
+                self.status_msg = f"Encontrado {len(results)} ocorrências em abas abertas."
+            else:
+                self.status_msg = "Nenhuma ocorrência encontrada nas abas abertas."
 
     def action_replace(self):
         find_str = self.ui.prompt("Substituir: ")
